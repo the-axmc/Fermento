@@ -9,9 +9,10 @@
     "build": "tsc -b && vite build",
     "install:contracts": "npm install --workspace=packages && npm run build --workspace=packages",
     "preview": "vite preview",
-    "lint": "eslint .",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "format": "prettier . --write",
-    "prepare": "husky"
+    "prepare": "husky install"
   },
   "workspaces": [
     "packages/*"
@@ -32,7 +33,6 @@
     "@eslint/js": "^9.27.0",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
-    "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^8.2.2",
     "dotenv": "^16.4.1",
@@ -54,9 +54,10 @@
     "vite-plugin-wasm": "^3.4.1"
   },
   "lint-staged": {
-    "**/*": [
-      "eslint --fix --no-warn-ignored",
-      "prettier --write --ignore-unknown"
-    ]
+    "**/*.{js,jsx,ts,tsx}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "**/*.{json,md,html,css,scss,yaml,yml}": "prettier --write"
   }
 }
