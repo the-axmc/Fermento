@@ -1,8 +1,9 @@
 {
-  "name": "scaffold-stellar-frontend",
+  "name": "fermento-frontend",
   "type": "module",
   "version": "0.0.1",
   "private": true,
+  "workspaces": ["packages/*"],
   "scripts": {
     "dev": "concurrently \"stellar scaffold watch --build-clients\" \"vite\"",
     "start": "concurrently \"stellar scaffold watch --build-clients\" \"vite\"",
@@ -12,19 +13,17 @@
     "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "format": "prettier . --write",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "sync:client": "rsync -a --delete target/packages/non_fungible_contract/ packages/non_fungible_contract/"
   },
-  "workspaces": [
-    "packages/*"
-  ],
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.7.5",
-    "non_fungible_contract": "file:target/packages/non_fungible_contract",
     "@stellar/design-system": "^3.1.1",
     "@stellar/stellar-sdk": "^14.0.0-rc.3",
     "@stellar/stellar-xdr-json": "^22.0.0-rc.1.1",
     "@tanstack/react-query": "^5.80.7",
     "lossless-json": "^4.1.0",
+    "non_fungible_contract": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^6.30.1",
