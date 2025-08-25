@@ -1,12 +1,17 @@
+# ---------- Use Testnet for "development" so npm run dev binds to testnet ----------
+
 [development]
 accounts = ["default"]
 
 [development.network]
-rpc-url = "http://localhost:8000/rpc"
-network-passphrase = "Standalone Network ; February 2017"
-run-locally = true
+rpc-url = "https://soroban-testnet.stellar.org"
+network-passphrase = "Test SDF Network ; September 2015"
+run-locally = false
 
 [development.contracts]
 
 [development.contracts.non_fungible_contract]
-constructor_args = "--admin andlopvic --upgrader andlopvic --pauser andlopvic --minter andlopvic"
+# Your deployed testnet contract ID:
+id = "CBIPHUNJIHE3HTLE2BCCEKVON5PYC7LPT6HLX46SYME4VYBENTOS5PVU"
+# IMPORTANT: do NOT put constructor_args here (we're not instantiating locally)
+# wasm_hash is optional; client binding only needs the id
