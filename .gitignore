@@ -32,9 +32,10 @@ lerna-debug.log*
 
 # generated contract clients
 
-# if you have other workspace packages, add them here
-!packages/.gitkeep
-
 # generated contract client imports
 src/contracts/*
 !src/contracts/util.ts
+
+# keep generated client committed
+!packages/non_fungible_contract/**
+

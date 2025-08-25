@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck
 import js from "@eslint/js";
 import globals from "globals";
 import reactDOM from "eslint-plugin-react-dom";

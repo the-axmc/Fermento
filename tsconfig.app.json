@@ -18,7 +18,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    "baseUrl": ".",                         // ← add
+    "paths": {                              // ← add
+      "non_fungible_contract": ["packages/non_fungible_contract/dist"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "packages/non_fungible_contract/dist"]  // ← optional but helpful
 }
