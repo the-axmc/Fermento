@@ -19,6 +19,7 @@
   ],
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.7.5",
+    "non_fungible_contract": "file:target/packages/non_fungible_contract",
     "@stellar/design-system": "^3.1.1",
     "@stellar/stellar-sdk": "^14.0.0-rc.3",
     "@stellar/stellar-xdr-json": "^22.0.0-rc.1.1",
