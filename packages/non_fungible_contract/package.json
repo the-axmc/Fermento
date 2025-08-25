@@ -1,0 +1,28 @@
+{
+  "name": "non_fungible_contract",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "echo Prebuilt Soroban client; exit 0"
+  },
+  "peerDependencies": {
+    "@stellar/stellar-sdk": "^14.0.0-rc.3"
+  },
+  "dependencies": {
+    "buffer": "6.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}
