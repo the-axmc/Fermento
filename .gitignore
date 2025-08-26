@@ -30,12 +30,12 @@ lerna-debug.log*
 # macOS-specific files
 .DS_Store
 
-# generated contract clients
+
+# keep generated client committed
+!packages/non_fungible_contract/**
 
 # generated contract client imports
 src/contracts/*
 !src/contracts/util.ts
-
-# keep generated client committed
-!packages/non_fungible_contract/**
+!src/contracts/client.ts
 

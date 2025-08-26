@@ -7,15 +7,12 @@ import { useWallet } from "../hooks/useWallet";
 import { useAuth } from "../hooks/useAuth";
 import AuthPanel from "../components/AuthPanel";
 
-<AuthPanel />
-
-
 /* ---------------------------------- Types --------------------------------- */
 
 type FermentationState = "active" | "monitoring" | "ready";
 
 interface LogEntry {
-  id: string; // unique key for React
+  id: string;
   date: string;
   state: string;
   notes: string;
@@ -78,25 +75,6 @@ const extractPublicKey = (wallet: unknown): string | undefined => {
   return sessionPk;
 };
 
-/** Build metadata JSON into a data: URI (swap to IPFS later) */
-const makeMetadataURI = (p: FermentationProduct): string => {
-  const payload = {
-    name: p.name,
-    category: p.type,
-    progress: p.progress,
-    state: p.currentState,
-    startedAt: p.startDate,
-    attributes: {
-      ingredients: p.metadata.ingredients,
-      temperature: p.metadata.temperature,
-      notes: p.metadata.notes,
-    },
-    log: p.progressLog,
-    updatedAt: new Date().toISOString(),
-  };
-  return `data:application/json,${encodeURIComponent(JSON.stringify(payload))}`;
-};
-
 /** Clamp to u32 for Soroban spec (0..2^32-1) */
 const toU32 = (n: number): number => {
   const x = Math.floor(Number.isFinite(n) ? n : 0);
@@ -145,7 +123,7 @@ const initialSeed: FermentationProduct[] = [
 const LS_KEY = "fermentation.products.v1";
 
 const Home: React.FC = () => {
-  const { user, token } = useAuth(); // <-- INSIDE component
+  const { user, token } = useAuth();
   const wallet = useWallet();
   const walletPublicKey = extractPublicKey(wallet);
   const isConnected = typeof walletPublicKey === "string" && walletPublicKey.length > 0;
@@ -156,19 +134,26 @@ const Home: React.FC = () => {
   const [mintOnAdd, setMintOnAdd] = React.useState(true);
   const [newProduct, setNewProduct] = React.useState({ name: "", type: "", ingredients: "", temperature: "", notes: "" });
 
-  const contract = React.useMemo(() => getContract() as any, []);
+  // One contract instance
+  const contract = React.useMemo(() => getContract(), []);
 
   // Ensure minter role (quietly) after login
   React.useEffect(() => {
     const doGrant = async () => {
       if (!token || !user?.wallet) return;
       try {
-        await fetch("/api/roles/grant-minter", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } });
-      } catch (e) { console.warn("grant-minter failed (maybe already granted):", e); }
+        await fetch("/api/roles/grant-minter", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        });
+      } catch (e) {
+        console.warn("grant-minter failed (maybe already granted):", e);
+      }
     };
     void doGrant();
   }, [token, user?.wallet]);
 
+  // Hydrate from localStorage
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -179,107 +164,116 @@ const Home: React.FC = () => {
     } catch {}
   }, []);
 
+  // Persist to localStorage
   React.useEffect(() => {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(products)); } catch {}
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(products));
+    } catch {}
   }, [products]);
 
-  // verify on-chain ownership if contract exposes owner_of
+  // Verify on-chain ownership using owner_of().result
   React.useEffect(() => {
     const verify = async () => {
       if (!isConnected) return;
-      if (typeof contract.owner_of !== "function") return;
+      if (typeof (contract as any).owner_of !== "function") return;
 
       const updated = await Promise.all(
-        products.map(async (p: FermentationProduct) => {
+        products.map(async (p) => {
           try {
-            const ownerRes = await contract.owner_of({ token_id: p.tokenId }); // exact name from bindings
+            const tx = await (contract as any).owner_of({ token_id: p.tokenId });
+            const res = tx?.result as unknown;
             let ownerStr: string | undefined;
-            if (typeof ownerRes === "string") ownerStr = ownerRes;
-            else if (isRecord(ownerRes)) {
-              ownerStr = getStringProp(ownerRes, "address") ?? getStringProp(ownerRes, "accountId") ?? getStringProp(ownerRes, "publicKey");
+            if (typeof res === "string") ownerStr = res;
+            else if (isRecord(res)) {
+              ownerStr =
+                getStringProp(res, "address") ??
+                getStringProp(res, "accountId") ??
+                getStringProp(res, "publicKey");
             }
             const stillOwned = !!ownerStr && ownerStr === walletPublicKey;
             return { ...p, minted: stillOwned ? true : p.minted ?? false };
-          } catch { return p; }
+          } catch {
+            return p;
+          }
         }),
       );
       setProducts(updated);
     };
     void verify();
-  }, [isConnected, walletPublicKey, contract, products]);
-
+  }, [isConnected, walletPublicKey, products, contract]);
 
   /* ---------------------------- On-chain operations --------------------------- */
 
   const mintProduct = async (p: FermentationProduct) => {
-    if (!isConnected || !walletPublicKey) { alert("Connect your wallet to mint the product NFT."); return; }
-    const uri = makeMetadataURI(p);
-
+    if (!isConnected || !walletPublicKey) {
+      alert("Connect your wallet to mint the product NFT.");
+      return;
+    }
     try {
-      if (typeof contract.mint === "function") {
-        await contract.mint({ to: walletPublicKey, token_id: p.tokenId, uri });
-      } else if (typeof contract.mint_to === "function") {
-        await contract.mint_to({ to: walletPublicKey, token_id: p.tokenId, uri });
-      } else {
-        alert("Contract does not expose mint/mint_to; cannot mint on-chain yet.");
-        return;
-      }
-      setProducts(prev => prev.map(x => x.id === p.id ? ({ ...x, minted: true }) : x));
+      const tx = await (contract as any).mint({
+        to: walletPublicKey,
+        token_id: p.tokenId,
+        caller: walletPublicKey,
+      });
+      await tx.signAndSend();
+      setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, minted: true } : x)));
     } catch (err) {
       console.error(err);
       alert(`Mint failed: ${errorToString(err)}`);
     }
   };
 
-  const updateOnChainMetadata = async (p: FermentationProduct) => {
-    if (!isConnected) return;
-    const uri = makeMetadataURI(p);
-    try {
-      if (typeof contract.set_metadata === "function") {
-        await contract.set_metadata({ token_id: p.tokenId, uri });
-      } else if (typeof contract.set_uri === "function") {
-        await contract.set_uri({ token_id: p.tokenId, uri });
-      }
-    } catch (err) { console.warn("Metadata update failed:", err); }
+  // No-op: current ABI doesn’t expose a metadata setter
+  const updateOnChainMetadata = async (_p: FermentationProduct) => {
+    return;
   };
-  
+
+  /** P1→P2: burn P1 then mint P2 */
   const transformProduct = async (productId: string) => {
-    const current = products.find(p => p.id === productId);
+    const current = products.find((p) => p.id === productId);
     if (!current) return;
-    if (!isConnected || !walletPublicKey) { alert("Connect your wallet to finalize on-chain."); return; }
+    if (!isConnected || !walletPublicKey) {
+      alert("Connect your wallet to finalize on-chain.");
+      return;
+    }
 
     try {
-      if (current.minted && typeof contract.burn === "function") {
-        await contract.burn({ token_id: current.tokenId });
+      // Burn P1 if minted
+      if (current.minted && typeof (contract as any).burn === "function") {
+        const burnTx = await (contract as any).burn({
+          from: walletPublicKey,
+          token_id: current.tokenId,
+        });
+        await burnTx.signAndSend();
       }
 
+      // Mint P2 (progress=100)
       const p2: FermentationProduct = {
         ...current,
         tokenId: toU32(current.tokenId + 1),
         currentState: "ready",
         progress: 100,
-        progressLog: [...current.progressLog, { id: uid(), date: todayISO(), state: "Transformed to P2 (ready)", notes: "Fermentation completed" }],
+        progressLog: [
+          ...current.progressLog,
+          { id: uid(), date: todayISO(), state: "Transformed to P2 (ready)", notes: "Fermentation completed" },
+        ],
         minted: false,
       };
-      const uri2 = makeMetadataURI(p2);
 
-      if (typeof contract.mint === "function") {
-        await contract.mint({ to: walletPublicKey, token_id: p2.tokenId, uri: uri2 });
-      } else if (typeof contract.mint_to === "function") {
-        await contract.mint_to({ to: walletPublicKey, token_id: p2.tokenId, uri: uri2 });
-      } else {
-        alert("Contract has no mint method; cannot mint P2.");
-        return;
-      }
+      const mint2 = await (contract as any).mint({
+        to: walletPublicKey,
+        token_id: p2.tokenId,
+        caller: walletPublicKey,
+      });
+      await mint2.signAndSend();
 
-      setProducts(prev => prev.map(p => p.id === productId ? ({ ...p2, minted: true }) : p));
-      alert("🎉 Transformed: P1 burned (if supported) and P2 minted.");
+      setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p2, minted: true } : p)));
+      alert("🎉 Transformed: P1 burned and P2 minted.");
     } catch (err) {
       console.error(err);
       alert(`On-chain finalize failed: ${errorToString(err)}`);
     }
   };
-   
 
   /* --------------------------------- Handlers -------------------------------- */
 
@@ -343,11 +337,15 @@ const Home: React.FC = () => {
           <h1 style={{ margin: 0 }}>Fermentation Tracker</h1>
         </div>
 
+        {/* Auth panel (login / signup) */}
+        <div style={{ marginBottom: 16 }}>
+          <AuthPanel />
+        </div>
+
         {/* Intro */}
         <div style={{ display: "grid", gap: 12, marginBottom: 24 }}>
           <p style={{ color: "#6b7280" }}>
-            Track fermentation from P1 to P2. You can mint an NFT when you add a product, update its metadata as you
-            monitor, and on completion burn P1 (if supported) and mint P2 with final attributes.
+            Track fermentation from P1 to P2. You can mint an NFT when you add a product, update its progress, and on completion burn P1 and mint P2.
           </p>
           {!isConnected && (
             <p style={{ color: "#9ca3af", fontStyle: "italic", marginTop: -8 }}>
@@ -491,27 +489,13 @@ const Home: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Progress Log */}
-                      <div>
-                        <div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500, marginBottom: 8 }}>Progress Log</div>
-                        <div style={{ display: "grid", gap: 8, maxHeight: 180, overflowY: "auto" }}>
-                          {product.progressLog.map((log) => (
-                            <div key={log.id} style={{ background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: 8, fontSize: 13 }}>
-                              <div style={{ fontWeight: 600 }}>{log.date}</div>
-                              <div style={{ color: "#6b7280" }}>{log.state}</div>
-                              {log.notes && <div style={{ fontSize: 12 }}>{log.notes}</div>}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
                       {/* On-chain finalize (P1 -> P2) */}
                       {product.currentState === "ready" && (
                         <button
                           type="button"
                           onClick={() => void transformProduct(product.id)}
                           style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #1f6feb", background: "#1f6feb", color: "#fff", cursor: "pointer" }}
-                          title="Burn P1 (if supported) and mint P2 with final metadata"
+                          title="Burn P1 and mint P2"
                         >
                           Transform Product (P1 → P2)
                         </button>
