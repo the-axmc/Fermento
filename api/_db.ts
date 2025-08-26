@@ -1,12 +1,19 @@
-import { MongoClient } from "mongodb";
+// /api/_db.ts
+import { MongoClient, Db } from "mongodb";
 
 const uri = process.env.MONGODB_URI!;
-let client: MongoClient | null = null;
+if (!uri) throw new Error("Missing MONGODB_URI");
 
-export async function getDb() {
-  if (!client) client = new MongoClient(uri);
-  // In modern drivers, `client.topology` may be undefined - just always ensure connect:
-  // eslint-disable-next-line @typescript-eslint/no-floating-promises
-  if (!(client as any).topology) await client.connect();
-  return client.db("fermento");
+let cachedClient: MongoClient | null = null;
+let cachedDb: Db | null = null;
+
+export async function getDb(): Promise<Db> {
+  if (cachedDb) return cachedDb;
+  const client = cachedClient ?? new MongoClient(uri);
+  if (!cachedClient) {
+    await client.connect();
+    cachedClient = client;
+  }
+  cachedDb = client.db(); // uses default DB from URI
+  return cachedDb;
 }
