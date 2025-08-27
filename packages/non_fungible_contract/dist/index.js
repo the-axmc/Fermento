@@ -1,12 +1,19 @@
-import { Buffer } from "buffer";
-import { Client as ContractClient, Spec as ContractSpec, } from '@stellar/stellar-sdk/contract';
-export * from '@stellar/stellar-sdk';
+import { Buffer } from 'buffer';
+import { Client as ContractClient, Spec as ContractSpec } from '@stellar/stellar-sdk/contract';
+
+// Replace star re-export with namespace export
+import * as stellarSdk from '@stellar/stellar-sdk';
+export { stellarSdk };
+
+// Keep these if they work in your build
 export * as contract from '@stellar/stellar-sdk/contract';
 export * as rpc from '@stellar/stellar-sdk/rpc';
+
 if (typeof window !== 'undefined') {
-    //@ts-ignore Buffer exists
-    window.Buffer = window.Buffer || Buffer;
+  // @ts-ignore Buffer exists
+  window.Buffer = window.Buffer || Buffer;
 }
+
 export const networks = {
     testnet: {
         networkPassphrase: "Test SDF Network ; September 2015",
