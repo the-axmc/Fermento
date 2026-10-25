@@ -1,3 +1,4 @@
 [toolchain]
-channel = "1.88.0"
+# soroban-sdk 28 requires Rust 1.91 or newer.
+channel = "1.95.0"
 targets = ["wasm32v1-none"]
