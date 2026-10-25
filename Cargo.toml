@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["contracts/*"]
+# Prebuilt OpenZeppelin wasm, deployed as is; not a crate.
+exclude = ["contracts/confidential_token"]
 
 [workspace.package]
 authors = []

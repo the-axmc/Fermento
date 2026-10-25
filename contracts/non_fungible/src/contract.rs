@@ -8,6 +8,8 @@
 //   minter   - registers batches, sets metadata and lifecycle stages
 //   redeemer - records unit claims (the batch_shares contract or an operator)
 //   pauser   - emergency stop for transfers and burns
+//   inspector - independent party: attests that a batch exists and how many
+//               units it holds, and may re-link its NFC tag once attested
 //   upgrader - replaces the contract code
 
 use soroban_sdk::{
@@ -44,6 +46,8 @@ pub enum BatchKey {
     Tag(u32),
     /// Reverse lookup: which batch a tag is bound to.
     TagBatch(BytesN<32>),
+    /// Latest independent attestation of a batch.
+    Attestation(u32),
 }
 
 /// A unit claim, verifiable from a QR code pointing at `claim_id`.
@@ -54,6 +58,18 @@ pub struct UnitClaim {
     pub claimer: Address,
     pub units: u32,
     pub ledger: u32,
+}
+
+/// An inspector's record that a batch exists. `units` caps how many units can
+/// ever be sold against it; `evidence` is the sha256 of the inspection report
+/// (photos, certificates, lab reference sample), kept off chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Attestation {
+    pub inspector: Address,
+    pub units: u32,
+    pub evidence: BytesN<32>,
+    pub timestamp: u64,
 }
 
 // ################## ERRORS ##################
@@ -70,6 +86,10 @@ pub enum BatchRegistryError {
     NotProducer = 502,
     /// This tag is already bound to another batch.
     TagTaken = 503,
+    /// The batch is attested and has a tag: only an inspector may re-link it.
+    TagLocked = 504,
+    /// An attestation must cover at least one unit.
+    InvalidAttestation = 505,
 }
 
 // ################## EVENTS ##################
@@ -109,6 +129,16 @@ pub struct TagLinked {
     pub batch_id: u32,
     pub producer: Address,
     pub tag: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchAttested {
+    #[topic]
+    pub batch_id: u32,
+    pub inspector: Address,
+    pub units: u32,
+    pub evidence: BytesN<32>,
 }
 
 
@@ -249,7 +279,9 @@ impl BatchRegistry {
 
     /// Bind a physical NFC tag to a batch. `tag` is the sha256 of the tag's
     /// serial number, so the chain never carries the raw serial. Authorized by
-    /// the producer's own account. Re-linking replaces the previous tag.
+    /// the producer's own account. Re-linking replaces the previous tag, until
+    /// an inspector attests the batch: from then on a linked tag is locked, so
+    /// the producer cannot move it to another cask.
     pub fn link_tag(e: &Env, batch_id: u32, producer: Address, tag: BytesN<32>) {
         producer.require_auth();
         Base::owner_of(e, batch_id);
@@ -257,21 +289,49 @@ impl BatchRegistry {
         if stored.as_ref() != Some(&producer) {
             panic_with_error!(e, BatchRegistryError::NotProducer);
         }
-        if let Some(other) = e.storage().persistent().get::<_, u32>(&BatchKey::TagBatch(tag.clone())) {
-            if other != batch_id {
-                panic_with_error!(e, BatchRegistryError::TagTaken);
-            }
+        if e.storage().persistent().has(&BatchKey::Attestation(batch_id))
+            && e.storage().persistent().has(&BatchKey::Tag(batch_id))
+        {
+            panic_with_error!(e, BatchRegistryError::TagLocked);
         }
-        if let Some(old) = e.storage().persistent().get::<_, BytesN<32>>(&BatchKey::Tag(batch_id)) {
-            if old != tag {
-                e.storage().persistent().remove(&BatchKey::TagBatch(old));
-            }
-        }
-        e.storage().persistent().set(&BatchKey::Tag(batch_id), &tag);
-        keep_key(e, &BatchKey::Tag(batch_id));
-        e.storage().persistent().set(&BatchKey::TagBatch(tag.clone()), &batch_id);
-        keep_key(e, &BatchKey::TagBatch(tag.clone()));
+        Self::bind_tag(e, batch_id, tag.clone());
         TagLinked { batch_id, producer, tag }.publish(e);
+    }
+
+    /// Re-link the tag of a batch on the inspector's authority, e.g. when a
+    /// tag is damaged and replaced during an inspection.
+    #[only_role(caller, "inspector")]
+    pub fn inspector_link_tag(e: &Env, batch_id: u32, tag: BytesN<32>, caller: Address) {
+        Base::owner_of(e, batch_id);
+        Self::bind_tag(e, batch_id, tag.clone());
+        TagLinked { batch_id, producer: caller, tag }.publish(e);
+    }
+
+    // ---------- inspection ----------
+
+    /// Record an independent inspection: the batch exists and holds `units`
+    /// units. `batch_shares` refuses to sell more units than this. A later
+    /// attestation replaces the earlier one (e.g. after regauging).
+    #[only_role(caller, "inspector")]
+    pub fn attest(e: &Env, batch_id: u32, units: u32, evidence: BytesN<32>, caller: Address) {
+        Base::owner_of(e, batch_id);
+        if units == 0 {
+            panic_with_error!(e, BatchRegistryError::InvalidAttestation);
+        }
+        let record = Attestation {
+            inspector: caller.clone(),
+            units,
+            evidence: evidence.clone(),
+            timestamp: e.ledger().timestamp(),
+        };
+        e.storage().persistent().set(&BatchKey::Attestation(batch_id), &record);
+        keep_key(e, &BatchKey::Attestation(batch_id));
+        BatchAttested { batch_id, inspector: caller, units, evidence }.publish(e);
+    }
+
+    /// Latest attestation of a batch, if an inspector has visited it.
+    pub fn attestation(e: &Env, batch_id: u32) -> Option<Attestation> {
+        e.storage().persistent().get(&BatchKey::Attestation(batch_id))
     }
 
     pub fn producer(e: &Env, batch_id: u32) -> Option<Address> {
@@ -286,6 +346,27 @@ impl BatchRegistry {
     /// Batch a tapped tag belongs to, for the verification page.
     pub fn batch_of_tag(e: &Env, tag: BytesN<32>) -> Option<u32> {
         e.storage().persistent().get(&BatchKey::TagBatch(tag))
+    }
+
+    // ---------- internals ----------
+
+    /// Point `batch_id` at `tag`, freeing its previous tag. A tag bound to
+    /// another batch is refused.
+    fn bind_tag(e: &Env, batch_id: u32, tag: BytesN<32>) {
+        if let Some(other) = e.storage().persistent().get::<_, u32>(&BatchKey::TagBatch(tag.clone())) {
+            if other != batch_id {
+                panic_with_error!(e, BatchRegistryError::TagTaken);
+            }
+        }
+        if let Some(old) = e.storage().persistent().get::<_, BytesN<32>>(&BatchKey::Tag(batch_id)) {
+            if old != tag {
+                e.storage().persistent().remove(&BatchKey::TagBatch(old));
+            }
+        }
+        e.storage().persistent().set(&BatchKey::Tag(batch_id), &tag);
+        keep_key(e, &BatchKey::Tag(batch_id));
+        e.storage().persistent().set(&BatchKey::TagBatch(tag.clone()), &batch_id);
+        keep_key(e, &BatchKey::TagBatch(tag));
     }
 }
 

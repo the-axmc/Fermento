@@ -55,3 +55,4 @@ for t in "${targets[@]}"; do
   esac
 done
 echo "done"
+echo "first upgrade with inspections? run: scripts/grant-inspector.sh $ADMIN <inspector-address>"

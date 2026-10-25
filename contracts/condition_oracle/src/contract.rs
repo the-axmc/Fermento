@@ -16,9 +16,11 @@
 // token's units (USDC, 7 decimals).
 //
 // Roles (stellar-access AccessControl):
-//   curator - registers batches, sensors, producers, age curves and ratings
+//   curator   - registers batches, sensors, producers, age curves and ratings
+//   inspector - independent visits: the only check-ins that earn a care bonus
 // The producer of a batch (an address set by the curator) posts check-ins by
-// signing with its own account; no role is needed for that.
+// signing with its own account; no role is needed for that. They are shown
+// to holders and keep the care bonus from decaying, but never raise it.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
@@ -42,19 +44,19 @@ const CHECKIN_HISTORY: u32 = 60;
 const MAX_NOTE_LEN: u32 = 280;
 /// Condition multiplier floor when no reading was in range.
 const MIN_CONDITION_BPS: i128 = 7_000;
-/// Care bonus a perfect (score 100) check-in earns, in bps.
-const CHECKIN_BONUS_BPS: i128 = 250;
+/// Care bonus a perfect (score 100) inspection earns, in bps. Producer
+/// check-ins earn none: a producer cannot raise its own mark.
+const INSPECTION_BONUS_BPS: i128 = 500;
 /// The care bonus never exceeds this (1.20x).
 const MAX_CARE_BONUS_BPS: i128 = 2_000;
-/// Check-ins closer together than this earn no bonus (they are still recorded).
-const CHECKIN_COOLDOWN: u64 = SECONDS_PER_DAY;
-/// Days without a check-in before the care bonus starts to decay.
+/// Days without a check-in or inspection before the care bonus starts to decay.
 const CARE_GRACE_DAYS: u64 = 14;
 /// Bonus lost per day of silence past the grace period, in bps.
 const CARE_DECAY_BPS_PER_DAY: i128 = 25;
-/// A producer rating may not leave this band (0.5x to 2.0x).
-const MIN_RATING_BPS: i128 = 5_000;
-const MAX_RATING_BPS: i128 = 20_000;
+/// A producer rating may not leave this band (0.8x to 1.2x). Ratings stored
+/// under the older, wider band are clamped to it when read.
+const MIN_RATING_BPS: i128 = 8_000;
+const MAX_RATING_BPS: i128 = 12_000;
 
 // ################## STORAGE ##################
 
@@ -422,10 +424,9 @@ impl ConditionOracle {
     // ---------- check-ins ----------
 
     /// The producer of a batch posts an update. Authorized by the producer's
-    /// own account (the address the curator set with `set_producer`). Each
-    /// check-in is kept for holders; one per day also earns a care bonus of
-    /// up to CHECKIN_BONUS_BPS scaled by `score`. Returns the care multiplier
-    /// now in force.
+    /// own account (the address the curator set with `set_producer`). It is
+    /// kept for holders and keeps the care bonus from decaying, but earns no
+    /// bonus itself. Returns the care multiplier now in force.
     pub fn post_checkin(
         e: &Env,
         batch_id: u32,
@@ -440,6 +441,35 @@ impl ConditionOracle {
         if producer.as_ref() != Some(&poster) {
             panic_with_error!(e, OracleError::NotProducer);
         }
+        Self::record_checkin(e, batch_id, poster, kind, note, score, 0)
+    }
+
+    /// An inspector reports a visit. A perfect visit (score 100) earns
+    /// INSPECTION_BONUS_BPS, scaled by `score` and capped overall at
+    /// MAX_CARE_BONUS_BPS. Returns the care multiplier now in force.
+    #[only_role(caller, "inspector")]
+    pub fn post_inspection(
+        e: &Env,
+        batch_id: u32,
+        kind: Symbol,
+        note: String,
+        score: u32,
+        caller: Address,
+    ) -> i128 {
+        Self::load(e, batch_id);
+        let bonus_bps = INSPECTION_BONUS_BPS * score as i128 / 100;
+        Self::record_checkin(e, batch_id, caller, kind, note, score, bonus_bps)
+    }
+
+    fn record_checkin(
+        e: &Env,
+        batch_id: u32,
+        poster: Address,
+        kind: Symbol,
+        note: String,
+        score: u32,
+        bonus_bps: i128,
+    ) -> i128 {
         if score > 100 {
             panic_with_error!(e, OracleError::InvalidScore);
         }
@@ -449,8 +479,7 @@ impl ConditionOracle {
 
         let now = e.ledger().timestamp();
         let mut care = Self::care(e, batch_id);
-        let rewarded = care.count == 0 || now >= care.last_timestamp + CHECKIN_COOLDOWN;
-        let mut bonus_bps = if rewarded { CHECKIN_BONUS_BPS * score as i128 / 100 } else { 0 };
+        let mut bonus_bps = bonus_bps;
         if care.bonus_bps + bonus_bps > MAX_CARE_BONUS_BPS {
             bonus_bps = MAX_CARE_BONUS_BPS - care.bonus_bps;
         }
@@ -660,7 +689,7 @@ impl ConditionOracle {
                 .storage()
                 .persistent()
                 .get::<_, Rating>(&DataKey::Rating(p))
-                .map(|r| r.index_bps)
+                .map(|r| r.index_bps.clamp(MIN_RATING_BPS, MAX_RATING_BPS))
                 .unwrap_or(BPS),
             None => BPS,
         }

@@ -6,7 +6,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Buffer } from "buffer";
-import type { Offering } from "batch_shares_contract";
+import type { Escrow, Offering } from "batch_shares_contract";
+import type { Attestation } from "batch_registry_contract";
 import type {
   Breakdown,
   Checkin,
@@ -24,6 +25,12 @@ import {
 
 export interface BatchChain {
   offering?: Offering;
+  /** Buyer money held for the batch; absent for offerings that predate escrow. */
+  escrow?: Escrow;
+  /** Payment held per unit now: what a holder gets back if the batch fails. */
+  heldPerShare?: bigint;
+  /** Latest independent inspection: the batch exists and holds this many units. */
+  attestation?: Attestation;
   mark?: Mark;
   /** Every factor of the mark: age, cellar, care, producer rating. */
   breakdown?: Breakdown;
@@ -56,17 +63,32 @@ export const readBatch = async (batchId: number) => {
   const oracle = ORACLE_ID ? getOracle() : undefined;
   const registry = REGISTRY_ID ? getRegistry() : undefined;
   const id = { batch_id: batchId };
-  const [offering, breakdown, stats, history, checkins, producer, stage, tag] =
-    await Promise.all([
-      SHARES_ID ? quiet(() => getShares().offering(id)) : undefined,
-      oracle ? quiet(() => oracle.breakdown(id)) : undefined,
-      oracle ? quiet(() => oracle.get_stats(id)) : undefined,
-      oracle ? quiet(() => oracle.mark_history(id)) : undefined,
-      oracle ? quiet(() => oracle.checkins(id)) : undefined,
-      oracle ? quiet(() => oracle.producer(id)) : undefined,
-      registry ? quiet(() => registry.stage(id)) : undefined,
-      registry ? quiet(() => registry.tag(id)) : undefined,
-    ]);
+  const shares = SHARES_ID ? getShares() : undefined;
+  const [
+    offering,
+    escrow,
+    heldPerShare,
+    attestation,
+    breakdown,
+    stats,
+    history,
+    checkins,
+    producer,
+    stage,
+    tag,
+  ] = await Promise.all([
+    shares ? quiet(() => shares.offering(id)) : undefined,
+    shares ? quiet(() => shares.escrow(id)) : undefined,
+    shares ? quiet(() => shares.held_per_share_now(id)) : undefined,
+    registry ? quiet(() => registry.attestation(id)) : undefined,
+    oracle ? quiet(() => oracle.breakdown(id)) : undefined,
+    oracle ? quiet(() => oracle.get_stats(id)) : undefined,
+    oracle ? quiet(() => oracle.mark_history(id)) : undefined,
+    oracle ? quiet(() => oracle.checkins(id)) : undefined,
+    oracle ? quiet(() => oracle.producer(id)) : undefined,
+    registry ? quiet(() => registry.stage(id)) : undefined,
+    registry ? quiet(() => registry.tag(id)) : undefined,
+  ]);
   const mark: Mark | undefined = breakdown && {
     value: breakdown.value,
     timestamp: breakdown.timestamp,
@@ -76,6 +98,9 @@ export const readBatch = async (batchId: number) => {
   };
   return {
     offering,
+    escrow: escrow ?? undefined,
+    heldPerShare,
+    attestation: attestation ?? undefined,
     mark,
     breakdown,
     stats,
@@ -122,7 +147,16 @@ export const useBatchChain = (
 export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
   const offline = !SHARES_ID && !ORACLE_ID;
   const [rows, setRows] = useState<
-    Record<number, { offering?: Offering; mark?: Mark; stats?: Stats }>
+    Record<
+      number,
+      {
+        offering?: Offering;
+        escrow?: Escrow;
+        heldPerShare?: bigint;
+        mark?: Mark;
+        stats?: Stats;
+      }
+    >
   >({});
   const [loading, setLoading] = useState(!offline);
   const key = ids.join(",");
@@ -133,18 +167,33 @@ export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
     const load = async () => {
       const entries = await Promise.all(
         ids.map(async (id) => {
-          const [offering, mark, stats] = await Promise.all([
-            SHARES_ID
-              ? quiet(() => getShares().offering({ batch_id: id }))
-              : undefined,
-            ORACLE_ID
-              ? quiet(() => getOracle().mark({ batch_id: id }))
-              : undefined,
-            ORACLE_ID
-              ? quiet(() => getOracle().get_stats({ batch_id: id }))
-              : undefined,
-          ]);
-          return [id, { offering, mark, stats }] as const;
+          const shares = SHARES_ID ? getShares() : undefined;
+          const [offering, escrow, heldPerShare, mark, stats] =
+            await Promise.all([
+              shares
+                ? quiet(() => shares.offering({ batch_id: id }))
+                : undefined,
+              shares ? quiet(() => shares.escrow({ batch_id: id })) : undefined,
+              shares
+                ? quiet(() => shares.held_per_share_now({ batch_id: id }))
+                : undefined,
+              ORACLE_ID
+                ? quiet(() => getOracle().mark({ batch_id: id }))
+                : undefined,
+              ORACLE_ID
+                ? quiet(() => getOracle().get_stats({ batch_id: id }))
+                : undefined,
+            ]);
+          return [
+            id,
+            {
+              offering,
+              escrow: escrow ?? undefined,
+              heldPerShare,
+              mark,
+              stats,
+            },
+          ] as const;
         }),
       );
       if (active) {

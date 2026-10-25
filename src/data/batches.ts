@@ -39,6 +39,8 @@ export interface BatchInfo {
   producerAddress?: string;
   /** False for ferments the producer only tracks: registered, never offered. */
   onSale?: boolean;
+  /** From the producer API: a listed sale waits for an inspector's attestation. */
+  saleStatus?: "tracking" | "awaiting-inspection" | "open";
   /** Confidential wrapper of the share token, when the batch has one. */
   confidentialToken?: string;
   /* Artwork */

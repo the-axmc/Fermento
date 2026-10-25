@@ -28,9 +28,13 @@ interface Holding {
   shares: bigint;
   /** Mark per share, or the fill price when no mark exists. */
   mark: bigint;
+  /** The inspector declared the batch failed: refunds are open. */
+  defaulted: boolean;
+  /** Payment still held per share, refunded after a failure. */
+  heldPerShare: bigint;
 }
 
-type Action = { kind: "redeem" | "send"; holding: Holding } | null;
+type Action = { kind: "redeem" | "send" | "refund"; holding: Holding } | null;
 
 /* --------------------------------- Sheet ---------------------------------- */
 
@@ -50,6 +54,7 @@ const ActionSheet: React.FC<{
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [hash, setHash] = React.useState<string | null>(null);
+  const [claimId, setClaimId] = React.useState<number | null>(null);
 
   const shares = BigInt(qty.replace(/\D/g, "") || "0");
   const now = BigInt(Math.floor(Date.now() / 1000));
@@ -73,10 +78,25 @@ const ActionSheet: React.FC<{
           shares,
         });
         setHash(await account.submit(tx));
+        // Simulated id: the claim page confirms it against the registry.
+        setClaimId(tx.result);
         recordActivity(account.address, {
           kind: "redeem",
           title: `Redeemed ${(shares / perUnit).toString()} ${holding.info.unit}${shares / perUnit === 1n ? "" : "s"} · ${holding.info.label}`,
           batchId: holding.info.batchId,
+        });
+      } else if (action.kind === "refund") {
+        const tx = await getShares().refund({
+          batch_id: holding.info.batchId,
+          holder: account.address,
+          shares,
+        });
+        setHash(await account.submit(tx));
+        recordActivity(account.address, {
+          kind: "redeem",
+          title: `Refund · ${holding.info.label}`,
+          batchId: holding.info.batchId,
+          amount: holding.heldPerShare * shares,
         });
       } else {
         const result = await getKit().transfer(
@@ -162,19 +182,33 @@ const ActionSheet: React.FC<{
           {hash
             ? action.kind === "redeem"
               ? "Claim recorded"
-              : "Shares sent"
+              : action.kind === "refund"
+                ? "Money back"
+                : "Shares sent"
             : action.kind === "redeem"
               ? `Redeem ${holding.info.label}`
-              : `Send shares of ${holding.info.label}`}
+              : action.kind === "refund"
+                ? `Take back your money`
+                : `Send shares of ${holding.info.label}`}
         </h2>
 
         {hash ? (
           <>
             <p style={{ margin: 0, fontSize: 15, lineHeight: 1.45 }}>
               {action.kind === "redeem"
-                ? `${(shares / perUnit).toString()} ${holding.info.unit}(s) are yours to collect. The shares were burned and the storage fee settled.`
-                : `${shares.toString()} shares moved to ${to.trim().slice(0, 6)}…`}
+                ? `${(shares / perUnit).toString()} ${holding.info.unit}(s) are yours to collect. Show the claim at the cellar, then confirm on it once you have them: that pays the producer the rest.`
+                : action.kind === "refund"
+                  ? `${money(holding.heldPerShare * shares)} is back in your wallet.`
+                  : `${shares.toString()} shares moved to ${to.trim().slice(0, 6)}…`}
             </p>
+            {claimId !== null && (
+              <Link
+                to={`/claim/${claimId}`}
+                style={{ fontSize: 14, fontWeight: 700, color: INK }}
+              >
+                Open claim Nº {claimId}
+              </Link>
+            )}
             <a
               href={`https://stellar.expert/explorer/testnet/tx/${hash}`}
               target="_blank"
@@ -229,6 +263,13 @@ const ActionSheet: React.FC<{
                 />
               </label>
             )}
+            {action.kind === "refund" && (
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.4 }}>
+                An independent inspector found a problem with this batch. Hand
+                back your shares for the {money(holding.heldPerShare)} per share
+                the contract still holds.
+              </p>
+            )}
             {action.kind === "redeem" && !mature && (
               <p style={{ margin: 0, fontSize: 13, color: RED }}>
                 This batch is not mature yet.
@@ -253,7 +294,9 @@ const ActionSheet: React.FC<{
                 ? "Confirming…"
                 : action.kind === "redeem"
                   ? `Redeem ${whole ? (shares / perUnit).toString() : ""} ${holding.info.unit}${shares / perUnit === 1n ? "" : "s"}`
-                  : "Send"}
+                  : action.kind === "refund"
+                    ? `Take back ${money(holding.heldPerShare * shares)}`
+                    : "Send"}
             </button>
           </>
         )}
@@ -318,6 +361,8 @@ const Holdings: React.FC = () => {
         offering: row.offering,
         shares,
         mark: row.mark?.value ?? row.offering.price,
+        defaulted: !!row.escrow?.defaulted,
+        heldPerShare: row.heldPerShare ?? 0n,
       },
     ];
   });
@@ -444,13 +489,23 @@ const Holdings: React.FC = () => {
             >
               Send
             </button>
-            <button
-              type="button"
-              onClick={() => setAction({ kind: "redeem", holding: h })}
-              style={small(true)}
-            >
-              Redeem
-            </button>
+            {h.defaulted ? (
+              <button
+                type="button"
+                onClick={() => setAction({ kind: "refund", holding: h })}
+                style={{ ...small(true), background: RED }}
+              >
+                Refund
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAction({ kind: "redeem", holding: h })}
+                style={small(true)}
+              >
+                Redeem
+              </button>
+            )}
           </div>
         ))}
 

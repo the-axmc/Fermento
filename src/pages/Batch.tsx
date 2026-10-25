@@ -6,7 +6,7 @@ import { useCatalogue } from "../hooks/useCatalogue";
 import MarkChart from "../components/MarkChart";
 import { useAccount } from "../hooks/useAccount";
 import { useBalance } from "../hooks/useBalance";
-import { useBatchChain } from "../hooks/useBatchChain";
+import { useBatchChain, type BatchChain } from "../hooks/useBatchChain";
 import { SHARES_ID, USDC_ID, getShares } from "../contracts/client";
 import { recordActivity } from "../lib/activity";
 import { celsius, money, pctChange, progress, shortDate } from "../lib/format";
@@ -267,6 +267,73 @@ const DetailRow: React.FC<{ label: string; value: string }> = ({
     <span style={{ fontWeight: 700, textAlign: "right" }}>{value}</span>
   </div>
 );
+
+/**
+ * What protects a buyer: an independent inspector saw the batch before any of
+ * it was sold, and part of every payment waits in the contract until the
+ * batch is inspected again and the unit is collected.
+ */
+const BuyerProtection: React.FC<{
+  chain: BatchChain;
+  unit: string;
+  awaitingInspection: boolean;
+}> = ({ chain, unit, awaitingInspection }) => {
+  const { attestation, escrow, heldPerShare, offering } = chain;
+  if (chain.offline || (!attestation && !offering && !awaitingInspection))
+    return null;
+  const upfront = escrow ? Number(escrow.upfront_bps) / 100 : undefined;
+  const inspection = escrow ? Number(escrow.inspection_bps) / 100 : undefined;
+  const status = !escrow
+    ? undefined
+    : escrow.defaulted
+      ? `The inspector found a problem with this batch. Sales are stopped and holders can take back ${money(heldPerShare)} per ${unit}.`
+      : escrow.inspected
+        ? `Inspected while ageing: the producer has received ${(upfront ?? 0) + (inspection ?? 0)} %. The rest is paid when you collect your ${unit}.`
+        : `Next: a mid-ageing inspection releases ${inspection} % to the producer. The rest is paid when you collect your ${unit}.`;
+  return (
+    <div
+      style={{
+        borderRadius: 20,
+        background: escrow?.defaulted ? PINK : CREAM,
+        padding: "14px 16px 4px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+      }}
+    >
+      <span style={{ fontWeight: 800, fontSize: 15 }}>Buyer protection</span>
+      {status && (
+        <p style={{ margin: "2px 0 6px", fontSize: 14, lineHeight: 1.4 }}>
+          {status}
+        </p>
+      )}
+      <DetailRow
+        label="Independent inspection"
+        value={
+          attestation
+            ? `${attestation.units} ${unit}s seen · ${shortDate(attestation.timestamp)}`
+            : "Pending · the sale opens after it"
+        }
+      />
+      <DetailRow
+        label="Your payment"
+        value={
+          escrow
+            ? `${upfront} % to the producer, ${100 - (upfront ?? 0)} % held`
+            : offering
+              ? "Paid to the producer in full"
+              : "—"
+        }
+      />
+      {escrow && !escrow.defaulted && (
+        <DetailRow
+          label="Back to you if it fails"
+          value={`${money(heldPerShare)} per ${unit}`}
+        />
+      )}
+    </div>
+  );
+};
 
 const Timeline: React.FC<{ filledAt?: bigint; maturesAt?: bigint }> = ({
   filledAt,
@@ -840,7 +907,9 @@ const Batch: React.FC = () => {
               {chain.loading
                 ? "Loading…"
                 : !offering
-                  ? "Not on sale yet"
+                  ? info.saleStatus === "awaiting-inspection"
+                    ? "Awaiting inspection"
+                    : "Not on sale yet"
                   : !offering.open
                     ? "Sale closed"
                     : remaining === 0n
@@ -851,6 +920,12 @@ const Batch: React.FC = () => {
             <Timeline
               filledAt={offering?.filled_at}
               maturesAt={offering?.matures_at}
+            />
+
+            <BuyerProtection
+              chain={chain}
+              unit={info.unit}
+              awaitingInspection={info.saleStatus === "awaiting-inspection"}
             />
 
             <div
@@ -947,7 +1022,7 @@ const Batch: React.FC = () => {
                 }}
               >
                 <span style={{ fontWeight: 800, fontSize: 15 }}>
-                  Producer check-ins
+                  Check-ins and inspections
                 </span>
                 <span style={{ fontSize: 12, color: INK_SOFT }}>
                   {chain.breakdown

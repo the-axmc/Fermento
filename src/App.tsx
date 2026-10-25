@@ -4,6 +4,7 @@ import AddFerment from "./pages/AddFerment";
 import Batch from "./pages/Batch";
 import Certify from "./pages/Certify";
 import Claim from "./pages/Claim";
+import Inspect from "./pages/Inspect";
 import Manage from "./pages/Manage";
 import Market from "./pages/Market";
 import Portfolio from "./pages/Portfolio";
@@ -41,6 +42,7 @@ function App() {
         <Route path="/producer/edit" element={<ProducerEdit />} />
         <Route path="/producer/:slug" element={<Producer />} />
         <Route path="/certify" element={<Certify />} />
+        <Route path="/inspect" element={<Inspect />} />
         <Route path="/privacy-check" element={<PrivacyCheck />} />
         <Route path="/cask/:id" element={<LegacyCask />} />
         <Route path="/portfolio" element={<Portfolio />} />

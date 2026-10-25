@@ -4,7 +4,8 @@
 #   2. seed the category age curve on the oracle (idempotent)
 #   3. register the batch and its sensor key on the oracle
 #   4. issue the share asset, hand its SAC admin to batch_shares
-#   5. open the primary offering
+#   5. attest the batch as the inspector (role granted by grant-inspector.sh)
+#   6. open the primary offering
 #
 # Usage:
 #   scripts/open-batch.sh <admin-key-name> <batch-id> <category> [sensor-key-name]
@@ -86,7 +87,16 @@ stellar contract invoke --source "$ISSUER" --network "$NETWORK" --id "$SHARE_SAC
 # Lock the issuer: after set_admin only the shares contract can mint.
 stellar tx new set-options --source "$ISSUER" --network "$NETWORK" --master-weight 0 >/dev/null
 
-echo "== 5. shares: open_offering"
+echo "== 5. registry: inspector attests the batch (the sale cannot open without it)"
+# The inspector key defaults to the admin for the demo; INSPECTOR_KEY names another identity.
+INSPECTOR_KEY="${INSPECTOR_KEY:-$ADMIN}"
+INSPECTOR_PK="$(stellar keys public-key "$INSPECTOR_KEY")"
+UNITS=$(( (TOTAL_SHARES + SHARES_PER_UNIT - 1) / SHARES_PER_UNIT ))
+EVIDENCE="$(printf 'batch %s attested by %s at %s' "$BATCH" "$INSPECTOR_PK" "$NOW" | shasum -a 256 | cut -d' ' -f1)"
+stellar contract invoke --source "$INSPECTOR_KEY" --network "$NETWORK" --id "$REGISTRY_ID" \
+  -- attest --batch_id "$BATCH" --units "$UNITS" --evidence "$EVIDENCE" --caller "$INSPECTOR_PK" >/dev/null
+
+echo "== 6. shares: open_offering"
 inv --id "$SHARES_ID" -- open_offering --batch_id "$BATCH" --share_token "$SHARE_SAC" \
   --producer "$ADMIN_PK" --price "$PRICE" --total_shares "$TOTAL_SHARES" \
   --fee_per_share_day "$FEE_PER_SHARE_DAY" --shares_per_unit "$SHARES_PER_UNIT" \

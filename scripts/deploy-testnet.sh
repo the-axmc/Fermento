@@ -75,4 +75,8 @@ EOF
 
 echo
 echo "wrote $OUT"
+
+echo "== inspector role (INSPECTOR=<address> to name an independent one)"
+"$(dirname "$0")/grant-inspector.sh" "$ADMIN" "${INSPECTOR:-$ADMIN_PK}"
+
 echo "next: scripts/open-batch.sh $ADMIN 14 moscatel   # register one batch end to end"

@@ -346,9 +346,9 @@ const CheckinSheet: React.FC<{
               style={{ width: "100%", accentColor: RED }}
             />
             <span style={{ fontSize: 12, color: INK_SOFT }}>
-              Honest scores build trust. One check-in a day earns up to +2.5 %
-              on the share value, scaled by this score, up to +20 % in all. Go
-              quiet for two weeks and the bonus starts to fade.
+              Holders see every check-in. Only visits by the independent
+              inspector raise the value (up to +20 % in all); your check-ins
+              keep that bonus from fading after two quiet weeks.
             </span>
           </label>
           {error && <p style={errorText}>{error}</p>}
