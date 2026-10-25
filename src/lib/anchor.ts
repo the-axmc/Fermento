@@ -116,7 +116,7 @@ const readJson = async <T>(res: Response): Promise<T> => {
 };
 
 /** XDR `SorobanAuthorizationEntries`: a 4-byte count, then the entries. */
-const decodeEntries = (b64: string): xdr.SorobanAuthorizationEntry[] =>
+export const decodeEntries = (b64: string): xdr.SorobanAuthorizationEntry[] =>
   (
     xdr as unknown as {
       SorobanAuthorizationEntries: {
@@ -125,7 +125,7 @@ const decodeEntries = (b64: string): xdr.SorobanAuthorizationEntry[] =>
     }
   ).SorobanAuthorizationEntries.fromXDR(b64, "base64");
 
-const encodeEntries = (entries: xdr.SorobanAuthorizationEntry[]) => {
+export const encodeEntries = (entries: xdr.SorobanAuthorizationEntry[]) => {
   const count = Buffer.alloc(4);
   count.writeUInt32BE(entries.length);
   return Buffer.concat([count, ...entries.map((e) => e.toXDR())]).toString(

@@ -413,12 +413,13 @@
       ]
     ],
     [],
+    [],
     []
   ],
   "ledger": {
     "protocol_version": 28,
     "sequence_number": 0,
-    "timestamp": 131328000,
+    "timestamp": 124416000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -638,7 +639,7 @@
                       "symbol": "bonus_bps"
                     },
                     "val": {
-                      "i128": "2000"
+                      "i128": "1750"
                     }
                   },
                   {
@@ -654,7 +655,7 @@
                       "symbol": "last_timestamp"
                     },
                     "val": {
-                      "u64": "98841600"
+                      "u64": "91929600"
                     }
                   }
                 ]
@@ -784,111 +785,111 @@
                           "symbol": "timestamp"
                         },
                         "val": {
+                          "u64": "87264000"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "map": [
+                      {
+                        "key": {
+                          "symbol": "bonus_bps"
+                        },
+                        "val": {
+                          "i128": "500"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "kind"
+                        },
+                        "val": {
+                          "symbol": "visit"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "note"
+                        },
+                        "val": {
+                          "string": "Cask 14 sealed, level at the bung."
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "poster"
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "score"
+                        },
+                        "val": {
+                          "u32": 100
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "timestamp"
+                        },
+                        "val": {
+                          "u64": "88128000"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "map": [
+                      {
+                        "key": {
+                          "symbol": "bonus_bps"
+                        },
+                        "val": {
+                          "i128": "500"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "kind"
+                        },
+                        "val": {
+                          "symbol": "visit"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "note"
+                        },
+                        "val": {
+                          "string": "Cask 14 sealed, level at the bung."
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "poster"
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "score"
+                        },
+                        "val": {
+                          "u32": 100
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "timestamp"
+                        },
+                        "val": {
                           "u64": "88992000"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "map": [
-                      {
-                        "key": {
-                          "symbol": "bonus_bps"
-                        },
-                        "val": {
-                          "i128": "500"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "kind"
-                        },
-                        "val": {
-                          "symbol": "visit"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "note"
-                        },
-                        "val": {
-                          "string": "Cask 14 sealed, level at the bung."
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "poster"
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "score"
-                        },
-                        "val": {
-                          "u32": 100
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "timestamp"
-                        },
-                        "val": {
-                          "u64": "91584000"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "map": [
-                      {
-                        "key": {
-                          "symbol": "bonus_bps"
-                        },
-                        "val": {
-                          "i128": "500"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "kind"
-                        },
-                        "val": {
-                          "symbol": "visit"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "note"
-                        },
-                        "val": {
-                          "string": "Cask 14 sealed, level at the bung."
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "poster"
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "score"
-                        },
-                        "val": {
-                          "u32": 100
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "timestamp"
-                        },
-                        "val": {
-                          "u64": "94176000"
                         }
                       }
                     ]
@@ -940,7 +941,7 @@
                           "symbol": "timestamp"
                         },
                         "val": {
-                          "u64": "96768000"
+                          "u64": "89856000"
                         }
                       }
                     ]
@@ -992,7 +993,7 @@
                           "symbol": "timestamp"
                         },
                         "val": {
-                          "u64": "98841600"
+                          "u64": "91929600"
                         }
                       }
                     ]

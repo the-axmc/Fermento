@@ -120,9 +120,9 @@ pub struct Offering {
     pub open: bool,
 }
 
-/// Fee bookkeeping for a holder in one batch. Shares bought on the DEX are not
-/// known here, so the fee is charged on the shares presented at redemption,
-/// from the holder's checkpoint or the fill date when they have none.
+/// Fee bookkeeping for a holder in one batch. Shares received elsewhere (DEX,
+/// plain transfer) are not known here: at redemption the shares the position
+/// covers pay from its checkpoint, any beyond it from the fill date.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Position {
@@ -207,7 +207,8 @@ pub enum BatchSharesError {
     /// Only the claim's holder or an inspector may confirm or refund it.
     NotClaimant = 616,
     ListingNotFound = 617,
-    /// The batch already has MAX_OPEN_LISTINGS open listings.
+    /// The batch already has MAX_OPEN_LISTINGS open listings, none dearer
+    /// than the new one.
     TooManyListings = 618,
     /// Only the seller may cancel a listing.
     NotSeller = 619,
@@ -540,19 +541,14 @@ impl BatchShares {
         share_client.transfer(&holder, &this, &shares);
         share_client.burn(&this, &shares);
 
-        // Storage fee on the shares presented.
-        let fee = Self::fee_for(e, &offering, batch_id, &holder, shares, now);
+        // Storage fee on the shares presented. The shares the holder keeps
+        // keep their checkpoint.
+        let settled = Self::take_from_position(e, &offering, &holder, shares);
+        let fee = Self::fee_since(&offering, settled, shares, now);
         if fee > 0 {
             let treasury = Self::treasury(e);
             token::Client::new(e, &Self::payment_token(e)).transfer(&holder, &treasury, &fee);
         }
-        let position = Self::position(e, batch_id, &holder);
-        let remaining = if position.shares > shares { position.shares - shares } else { 0 };
-        e.storage().persistent().set(
-            &DataKey::Position(batch_id, holder.clone()),
-            &Position { shares: remaining, fee_paid_until: now },
-        );
-        keep_key(e, &DataKey::Position(batch_id, holder.clone()));
 
         offering.redeemed += shares;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
@@ -733,7 +729,15 @@ impl BatchShares {
         Self::require_not_defaulted(e, batch_id);
         let mut open = Self::open_listing_ids(e, batch_id);
         if open.len() >= MAX_OPEN_LISTINGS {
-            panic_with_error!(e, BatchSharesError::TooManyListings);
+            // Full: a cheaper listing takes the slot of the dearest one, whose
+            // shares go back to its seller, so listings priced out of reach
+            // cannot hold the market.
+            let dearest = Self::dearest_listing(e, &open);
+            if price >= dearest.price {
+                panic_with_error!(e, BatchSharesError::TooManyListings);
+            }
+            Self::return_listing(e, &offering, &dearest);
+            open = Self::open_listing_ids(e, batch_id);
         }
 
         let this = e.current_contract_address();
@@ -768,14 +772,7 @@ impl BatchShares {
             panic_with_error!(e, BatchSharesError::NotSeller);
         }
         let offering = Self::load(e, listing.batch_id);
-        token::Client::new(e, &offering.share_token).transfer(
-            &e.current_contract_address(),
-            &seller,
-            &listing.shares,
-        );
-        Self::add_to_position(e, listing.batch_id, &seller, listing.shares, listing.fee_paid_until);
-        Self::close_listing(e, &listing);
-        ListingCancelled { batch_id: listing.batch_id, listing_id, shares: listing.shares }.publish(e);
+        Self::return_listing(e, &offering, &listing);
     }
 
     /// Buy `shares` from a listing at its asking price. The seller receives the
@@ -867,7 +864,9 @@ impl BatchShares {
     /// Storage fee `holder` would pay now to redeem `shares`.
     pub fn accrued_fee(e: &Env, batch_id: u32, holder: Address, shares: i128) -> i128 {
         let offering = Self::load(e, batch_id);
-        Self::fee_for(e, &offering, batch_id, &holder, shares, e.ledger().timestamp())
+        let position = Self::position(e, batch_id, &holder);
+        let settled = Self::settled_until(&offering, &position, shares);
+        Self::fee_since(&offering, settled, shares, e.ledger().timestamp())
     }
 
     /// Escrow of a batch; `None` for offerings opened before escrow existed.
@@ -974,9 +973,8 @@ impl BatchShares {
     fn take_from_position(e: &Env, offering: &Offering, holder: &Address, shares: i128) -> u64 {
         let position = Self::position(e, offering.batch_id, holder);
         let known = if position.shares < shares { position.shares } else { shares };
-        let unknown = shares - known;
-        let key = DataKey::Position(offering.batch_id, holder.clone());
         if known > 0 {
+            let key = DataKey::Position(offering.batch_id, holder.clone());
             e.storage().persistent().set(
                 &key,
                 &Position {
@@ -986,6 +984,15 @@ impl BatchShares {
             );
             keep_key(e, &key);
         }
+        Self::settled_until(offering, &position, shares)
+    }
+
+    /// Date the fees on `shares` presented by a holder are settled until: the
+    /// position's checkpoint for the shares it knows, the fill date for the
+    /// rest, weighted.
+    fn settled_until(offering: &Offering, position: &Position, shares: i128) -> u64 {
+        let known = if position.shares < shares { position.shares } else { shares };
+        let unknown = shares - known;
         match (known, unknown) {
             (0, _) => offering.filled_at,
             (_, 0) => position.fee_paid_until,
@@ -1014,6 +1021,31 @@ impl BatchShares {
         keep_key(e, &DataKey::BatchListings(batch_id));
     }
 
+    /// The open listing with the highest asking price, the oldest on a tie.
+    fn dearest_listing(e: &Env, open: &Vec<u32>) -> Listing {
+        let mut dearest: Option<Listing> = None;
+        for id in open.iter() {
+            let listing = Self::load_listing(e, id);
+            if dearest.as_ref().is_none_or(|d| listing.price > d.price) {
+                dearest = Some(listing);
+            }
+        }
+        dearest.unwrap_or_else(|| panic_with_error!(e, BatchSharesError::ListingNotFound))
+    }
+
+    /// Give the remaining shares of a listing back to its seller and close it.
+    fn return_listing(e: &Env, offering: &Offering, listing: &Listing) {
+        token::Client::new(e, &offering.share_token).transfer(
+            &e.current_contract_address(),
+            &listing.seller,
+            &listing.shares,
+        );
+        Self::add_to_position(e, listing.batch_id, &listing.seller, listing.shares, listing.fee_paid_until);
+        Self::close_listing(e, listing);
+        ListingCancelled { batch_id: listing.batch_id, listing_id: listing.id, shares: listing.shares }
+            .publish(e);
+    }
+
     /// Drop a sold-out or cancelled listing from storage and the batch index.
     fn close_listing(e: &Env, listing: &Listing) {
         e.storage().persistent().remove(&DataKey::Listing(listing.id));
@@ -1031,21 +1063,12 @@ impl BatchShares {
             .unwrap_or(Position { shares: 0, fee_paid_until: 0 })
     }
 
-    /// Fee for `shares` from the holder's checkpoint, or from the fill date for
-    /// shares acquired elsewhere (DEX), up to `now`. Whole days only.
-    fn fee_for(
-        e: &Env,
-        offering: &Offering,
-        batch_id: u32,
-        holder: &Address,
-        shares: i128,
-        now: u64,
-    ) -> i128 {
+    /// Fee for `shares` settled until `from` (see `settled_until`), up to
+    /// `now`. Whole days only.
+    fn fee_since(offering: &Offering, from: u64, shares: i128, now: u64) -> i128 {
         if offering.fee_per_share_day == 0 {
             return 0;
         }
-        let position = Self::position(e, batch_id, holder);
-        let from = if position.shares > 0 { position.fee_paid_until } else { offering.filled_at };
         let from = if from < offering.filled_at { offering.filled_at } else { from };
         let days = if now > from { ((now - from) / SECONDS_PER_DAY) as i128 } else { 0 };
         offering.fee_per_share_day * days * shares

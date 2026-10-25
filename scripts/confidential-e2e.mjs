@@ -57,6 +57,23 @@ const client = new ChainClient({
   networkPassphrase: Networks.TESTNET,
   contracts: CONTRACTS,
 });
+// The SDK gives up on the first network error, even while polling a
+// transaction it already sent. Retry the read-only RPC calls; never the send,
+// which could submit twice.
+for (const method of ["getTransaction", "simulateTransaction", "getAccount"]) {
+  const call = client.server[method].bind(client.server);
+  client.server[method] = async (...args) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await call(...args);
+      } catch (err) {
+        if (attempt === 5) throw err;
+        console.log(t(), `${method} failed (${err.message}), retrying`);
+        await new Promise((r) => setTimeout(r, 2_000 * attempt));
+      }
+    }
+  };
+}
 const addr = (a) => new Address(a).toScVal();
 const i128 = (v) => nativeToScVal(v, { type: "i128" });
 const bytes = (b) => xdr.ScVal.scvBytes(Buffer.from(b));

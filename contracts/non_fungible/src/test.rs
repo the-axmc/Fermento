@@ -245,6 +245,38 @@ fn attestation_of_zero_units_panics() {
 }
 
 #[test]
+fn claims_may_use_every_attested_unit() {
+    let s = setup();
+    registered_with_producer(&s);
+    s.client.attest(&14, &10, &tag(&s.env, 9), &s.inspector);
+    let buyer = Address::generate(&s.env);
+    s.client.claim(&14, &buyer, &6, &s.minter);
+    s.client.claim(&14, &buyer, &4, &s.minter);
+    assert_eq!(s.client.claimed_units(&14), 10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #506)")]
+fn claims_beyond_the_attested_units_panic() {
+    let s = setup();
+    registered_with_producer(&s);
+    s.client.attest(&14, &10, &tag(&s.env, 9), &s.inspector);
+    let buyer = Address::generate(&s.env);
+    s.client.claim(&14, &buyer, &6, &s.minter);
+    s.client.claim(&14, &buyer, &5, &s.minter);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #506)")]
+fn reattestation_below_claimed_units_panics() {
+    let s = setup();
+    registered_with_producer(&s);
+    s.client.attest(&14, &10, &tag(&s.env, 9), &s.inspector);
+    s.client.claim(&14, &Address::generate(&s.env), &8, &s.minter);
+    s.client.attest(&14, &7, &tag(&s.env, 8), &s.inspector);
+}
+
+#[test]
 fn producer_may_link_a_first_tag_after_attestation() {
     let s = setup();
     let producer = registered_with_producer(&s);

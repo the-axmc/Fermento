@@ -1,4 +1,5 @@
-# ---------- Use Testnet for "development" so npm run dev binds to testnet ----------
+# Scaffold Stellar environment, kept for the `stellar scaffold` tooling. The app
+# and scripts read contract IDs from deploy/testnet.env and .env instead.
 
 [development]
 accounts = ["default"]
@@ -11,7 +12,6 @@ run-locally = false
 [development.contracts]
 
 [development.contracts.non_fungible_contract]
-# Your deployed testnet contract ID:
-id = "CBIPHUNJIHE3HTLE2BCCEKVON5PYC7LPT6HLX46SYME4VYBENTOS5PVU"
+# The batch registry (REGISTRY_ID in deploy/testnet.env).
+id = "CDBVC4Z3DZMIDK4XO55WSJU3BLLBDFMR6QK2BNX4HTPYIU7T66N6TQLT"
 # IMPORTANT: do NOT put constructor_args here (we're not instantiating locally)
-# wasm_hash is optional; client binding only needs the id

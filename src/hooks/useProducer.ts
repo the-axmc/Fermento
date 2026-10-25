@@ -3,6 +3,7 @@ import type { Rating } from "condition_oracle_contract";
 import { ORACLE_ID, getOracle } from "../contracts/client";
 import { type Producer, findSeededProducer } from "../data/producers";
 import type { Kind } from "../data/batches";
+import { fetchAs } from "../lib/apiAuth";
 
 export interface ProducerState {
   producer?: Producer;
@@ -80,11 +81,15 @@ export const saveProfile = async (
   address: string,
   patch: ProfilePatch,
 ): Promise<Producer> => {
-  const r = await fetch(`/api/producers/${encodeURIComponent(address)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
+  const r = await fetchAs(
+    address,
+    `/api/producers/${encodeURIComponent(address)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
   const body = (await r.json()) as Producer & { error?: string };
   if (!r.ok) throw new Error(body.error ?? `Save failed (${r.status})`);
   return body;
@@ -104,7 +109,7 @@ export interface CertificationApplication {
 export const applyForCertification = async (
   application: CertificationApplication,
 ): Promise<Producer> => {
-  const r = await fetch("/api/certification", {
+  const r = await fetchAs(application.address, "/api/certification", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(application),
