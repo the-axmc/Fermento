@@ -6,6 +6,7 @@ import Holdings from "../components/Holdings";
 import { USDC_ID } from "../contracts/client";
 import { useAccount } from "../hooks/useAccount";
 import { useBalance } from "../hooks/useBalance";
+import { requestFunds, useTreasury } from "../hooks/useTreasury";
 import { money, shortAddress } from "../lib/format";
 import "./Wallet.css";
 
@@ -215,7 +216,12 @@ const Wallet: React.FC = () => {
   const account = useAccount();
   const navigate = useNavigate();
   const address = account.address;
+  const { treasury, refresh: refreshTreasury } = useTreasury();
   const usdc = useBalance(USDC_ID, address);
+  const eurc = useBalance(treasury?.assets.EURC?.sac ?? "", address);
+  const [funding, setFunding] = React.useState(false);
+  const [fundError, setFundError] = React.useState<string | null>(null);
+  const [fundHash, setFundHash] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
 
   const isEUR = cur === "EUR";
@@ -248,15 +254,42 @@ const Wallet: React.FC = () => {
     },
     {
       id: "wallet" as const,
-      label: "Send USDC to your address",
-      note: address
-        ? `Testnet: Circle faucet → ${shortAddress(address)}`
-        : "Sign in first",
+      label: "Fermento treasury (testnet)",
+      note: !address
+        ? "Sign in first"
+        : treasury
+          ? `${Number(treasury.assets[coin]?.balance ?? 0).toFixed(2)} ${coin} available · sent to ${shortAddress(address)}`
+          : "Producer service is not running",
     },
   ];
 
   const openModal = () => setModal(true);
-  const closeModal = () => setModal(false);
+  const closeModal = () => {
+    setModal(false);
+    setFundHash(null);
+    setFundError(null);
+  };
+
+  const addFunds = async () => {
+    if (method !== "wallet") {
+      closeModal();
+      return;
+    }
+    if (!address) {
+      navigate("/signin");
+      return;
+    }
+    setFunding(true);
+    setFundError(null);
+    try {
+      setFundHash(await requestFunds(address, coin, value));
+      refreshTreasury();
+    } catch (err) {
+      setFundError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFunding(false);
+    }
+  };
 
   React.useEffect(() => {
     if (!modal) return;
@@ -361,7 +394,7 @@ const Wallet: React.FC = () => {
             letterSpacing: "-0.04em",
           }}
         >
-          {address ? money(usdc, sym) : `${sym}0.00`}
+          {address ? money(isEUR ? eurc : usdc, sym) : `${sym}0.00`}
         </div>
         <div
           style={{
@@ -374,7 +407,7 @@ const Wallet: React.FC = () => {
         >
           {address ? (
             <>
-              USDC in your account ·{" "}
+              {coin} in your account ·{" "}
               <button
                 type="button"
                 onClick={copyAddress}
@@ -724,15 +757,52 @@ const Wallet: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                type="button"
-                disabled={tooLow}
-                onClick={closeModal}
-                style={{ ...primaryButton(!tooLow), marginTop: 4 }}
-              >
-                Add {sym}
-                {amountFixed}
-              </button>
+              {fundError && (
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 13,
+                    color: RED,
+                    fontWeight: 700,
+                  }}
+                >
+                  {fundError}
+                </p>
+              )}
+              {fundHash ? (
+                <>
+                  <p style={{ margin: 0, fontSize: 14 }}>
+                    {amountFixed} {coin} landed in your account.{" "}
+                    <a
+                      href={`https://stellar.expert/explorer/testnet/tx/${fundHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: RED, fontWeight: 700 }}
+                    >
+                      Explorer
+                    </a>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={closeModal}
+                    style={{ ...primaryButton(true), marginTop: 4 }}
+                  >
+                    Done
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={tooLow || funding}
+                  onClick={() => void addFunds()}
+                  style={{
+                    ...primaryButton(!tooLow && !funding),
+                    marginTop: 4,
+                  }}
+                >
+                  {funding ? "Sending…" : `Add ${sym}${amountFixed}`}
+                </button>
+              )}
             </div>
           </div>
         )}
