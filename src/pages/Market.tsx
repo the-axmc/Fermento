@@ -1,6 +1,5 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import BottomNav from "../components/BottomNav";
 import Landscape from "../components/Landscape";
 import type { BatchInfo } from "../data/batches";
 import { useCatalogue } from "../hooks/useCatalogue";
@@ -65,10 +64,10 @@ const SunArcs: React.FC = () => (
     viewBox="0 0 230 150"
     style={{
       position: "absolute",
-      right: -34,
-      top: 106,
-      width: 240,
-      height: 109,
+      right: -30,
+      top: 54,
+      width: 200,
+      height: 91,
     }}
     aria-hidden="true"
   >
@@ -100,17 +99,15 @@ const oneLine: React.CSSProperties = {
 };
 
 const viewButtonStyle = (active: boolean): React.CSSProperties => ({
-  height: 44,
-  padding: "0 16px",
-  borderRadius: 22,
+  width: 40,
+  height: 36,
+  padding: 0,
+  borderRadius: 18,
   border: 0,
   display: "flex",
   alignItems: "center",
-  gap: 7,
+  justifyContent: "center",
   cursor: "pointer",
-  fontFamily: SANS,
-  fontSize: 15,
-  fontWeight: 700,
   background: active ? RED : "transparent",
   color: active ? CREAM : INK,
 });
@@ -122,13 +119,13 @@ const ListRow: React.FC<{ listing: Row }> = ({ listing }) => (
     style={{
       display: "flex",
       alignItems: "center",
-      gap: 14,
-      padding: "14px 0",
+      gap: 12,
+      padding: "10px 0",
       borderBottom: `1.5px solid ${RULE}`,
       textDecoration: "none",
     }}
   >
-    <Bottle listing={listing} width={28} height={58} base={66} />
+    <Bottle listing={listing} width={26} height={52} base={66} />
     <div
       style={{
         display: "flex",
@@ -184,8 +181,8 @@ const GridCard: React.FC<{ listing: Row }> = ({ listing }) => (
   >
     <div
       style={{
-        height: 150,
-        borderRadius: 20,
+        height: 126,
+        borderRadius: 18,
         background: listing.tile,
         display: "flex",
         alignItems: "flex-end",
@@ -193,7 +190,7 @@ const GridCard: React.FC<{ listing: Row }> = ({ listing }) => (
         overflow: "hidden",
       }}
     >
-      <Bottle listing={listing} width={54} height={124} base={68} />
+      <Bottle listing={listing} width={46} height={104} base={68} />
     </div>
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {/* Reserve the tag row on every card so names line up */}
@@ -305,33 +302,27 @@ const Market: React.FC = () => {
   );
 
   return (
-    <div className="market" style={{ background: BG, overflow: "hidden" }}>
+    <div className="market" style={{ background: BG }}>
       <div
+        className="frame"
         style={{
-          position: "relative",
-          width: "100%",
-          maxWidth: 390,
-          minHeight: 1000,
-          margin: "0 auto",
-          boxSizing: "border-box",
           color: INK,
           fontFamily: SANS,
-          display: "flex",
-          flexDirection: "column",
-          gap: 18,
-          padding: "22px 24px 0",
-          overflow: "hidden",
+          gap: 14,
+          padding: "18px 24px 0",
         }}
       >
         <SunArcs />
 
+        {/* Brand on the left, view switch on the right: one row instead of three */}
         <div
           style={{
             position: "relative",
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-start",
             justifyContent: "space-between",
-            minHeight: 32,
+            gap: 12,
+            minHeight: 36,
           }}
         >
           <div
@@ -346,93 +337,87 @@ const Market: React.FC = () => {
             <br />
             Norberto <span style={{ color: INK }}>&amp;</span> Raimunda
           </div>
-        </div>
 
-        <div
-          style={{
-            position: "relative",
-            paddingTop: 34,
-            maxWidth: 275,
-          }}
-        >
-          <h1
+          <div
+            role="group"
+            aria-label="View"
             style={{
-              margin: 0,
-              fontFamily: SANS,
-              fontWeight: 800,
-              fontSize: 44,
-              lineHeight: 0.95,
-              letterSpacing: "-0.04em",
-              color: INK,
+              display: "flex",
+              flexShrink: 0,
+              padding: 3,
+              borderRadius: 22,
+              background: CREAM,
             }}
           >
-            The market
-          </h1>
+            <button
+              type="button"
+              aria-pressed={view === "list"}
+              aria-label="List view"
+              onClick={() => setView("list")}
+              style={viewButtonStyle(view === "list")}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <circle cx="5" cy="6" r="2.2" />
+                <circle cx="5" cy="12" r="2.2" />
+                <circle cx="5" cy="18" r="2.2" />
+                <rect x="9.5" y="4.5" width="11.5" height="3" rx="1.5" />
+                <rect x="9.5" y="10.5" width="11.5" height="3" rx="1.5" />
+                <rect x="9.5" y="16.5" width="11.5" height="3" rx="1.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === "grid"}
+              aria-label="Grid view"
+              onClick={() => setView("grid")}
+              style={viewButtonStyle(view === "grid")}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="8" height="8" rx="2.5" />
+                <rect x="13" y="3" width="8" height="8" rx="4" />
+                <rect x="3" y="13" width="8" height="8" rx="4" />
+                <rect x="13" y="13" width="8" height="8" rx="2.5" />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        <div
-          role="group"
-          aria-label="View"
+        <h1
           style={{
-            display: "flex",
-            alignSelf: "flex-start",
-            padding: 4,
-            borderRadius: 26,
-            background: CREAM,
+            position: "relative",
+            margin: "6px 0 0",
+            fontFamily: SANS,
+            fontWeight: 800,
+            fontSize: 38,
+            lineHeight: 0.95,
+            letterSpacing: "-0.04em",
+            color: INK,
           }}
         >
-          <button
-            type="button"
-            aria-pressed={view === "list"}
-            onClick={() => setView("list")}
-            style={viewButtonStyle(view === "list")}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <circle cx="5" cy="6" r="2.2" />
-              <circle cx="5" cy="12" r="2.2" />
-              <circle cx="5" cy="18" r="2.2" />
-              <rect x="9.5" y="4.5" width="11.5" height="3" rx="1.5" />
-              <rect x="9.5" y="10.5" width="11.5" height="3" rx="1.5" />
-              <rect x="9.5" y="16.5" width="11.5" height="3" rx="1.5" />
-            </svg>
-            List
-          </button>
-          <button
-            type="button"
-            aria-pressed={view === "grid"}
-            onClick={() => setView("grid")}
-            style={viewButtonStyle(view === "grid")}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <rect x="3" y="3" width="8" height="8" rx="2.5" />
-              <rect x="13" y="3" width="8" height="8" rx="4" />
-              <rect x="3" y="13" width="8" height="8" rx="4" />
-              <rect x="13" y="13" width="8" height="8" rx="2.5" />
-            </svg>
-            Grid
-          </button>
-        </div>
+          The market
+        </h1>
 
         <label
           style={{
+            position: "relative",
             display: "flex",
             alignItems: "center",
             gap: 10,
-            height: 48,
+            height: 46,
             padding: "0 16px",
-            borderRadius: 24,
+            borderRadius: 23,
             background: "#FFFFFF",
           }}
         >
@@ -480,7 +465,7 @@ const Market: React.FC = () => {
         </label>
 
         {rows.length > 0 && view === "list" && (
-          <div style={{ display: "flex", flexDirection: "column" }}>
+          <div className="market-list" style={{ position: "relative" }}>
             {rows.map((r) => (
               <ListRow key={r.batchId} listing={r} />
             ))}
@@ -489,11 +474,13 @@ const Market: React.FC = () => {
 
         {rows.length > 0 && view === "grid" && (
           <div
+            className="market-grid"
             style={{
+              position: "relative",
               display: "grid",
               gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
               gridAutoRows: "1fr",
-              gap: "22px 14px",
+              gap: "16px 14px",
             }}
           >
             {rows.map((r) => (
@@ -506,7 +493,7 @@ const Market: React.FC = () => {
           <p
             style={{
               margin: 0,
-              padding: "24px 0",
+              padding: "16px 0",
               textAlign: "center",
               fontSize: 15,
               color: INK_SOFT,
@@ -517,7 +504,6 @@ const Market: React.FC = () => {
         )}
 
         <Landscape />
-        <BottomNav />
       </div>
     </div>
   );

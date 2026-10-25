@@ -1,6 +1,5 @@
 import React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import BottomNav from "../components/BottomNav";
 import Landscape from "../components/Landscape";
 import type { BatchInfo } from "../data/batches";
 import { useCatalogue } from "../hooks/useCatalogue";
@@ -129,6 +128,7 @@ const Bottle: React.FC<{ listing: BatchInfo }> = ({ listing }) => (
 /** Rainbow over the vessel and its unit, bleeding to both edges of the frame. */
 const Hero: React.FC<{ listing: BatchInfo }> = ({ listing }) => (
   <svg
+    className="hero-art"
     viewBox="0 0 390 270"
     style={{
       display: "block",
@@ -431,7 +431,7 @@ const BuySheet: React.FC<{
   };
 
   return (
-    <div style={{ position: "absolute", inset: 0, zIndex: 10 }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 30 }}>
       <button
         type="button"
         aria-label="Close"
@@ -453,8 +453,11 @@ const BuySheet: React.FC<{
         aria-label="Buy shares"
         style={{
           position: "absolute",
-          left: 0,
-          right: 0,
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: "100%",
+          maxWidth: "var(--frame)",
+          boxSizing: "border-box",
           bottom: 0,
           background: CREAM,
           borderRadius: "32px 32px 0 0",
@@ -660,22 +663,14 @@ const Batch: React.FC = () => {
   const stats = chain.stats;
 
   return (
-    <div className="batch" style={{ background: BG, overflow: "hidden" }}>
+    <div className="batch" style={{ background: BG }}>
       <div
+        className="frame"
         style={{
-          position: "relative",
-          width: "100%",
-          maxWidth: 390,
-          minHeight: 1000,
-          margin: "0 auto",
-          boxSizing: "border-box",
           color: INK,
           fontFamily: SANS,
-          display: "flex",
-          flexDirection: "column",
-          gap: 18,
-          padding: "22px 24px 110px",
-          overflow: "hidden",
+          gap: 16,
+          padding: "18px 24px 0",
         }}
       >
         <div
@@ -760,7 +755,10 @@ const Batch: React.FC = () => {
           <>
             <Hero listing={info} />
 
-            <div style={{ display: "flex", gap: 18, padding: "8px 0 4px" }}>
+            <div
+              className="batch-tags"
+              style={{ display: "flex", gap: 18, padding: "8px 0 4px" }}
+            >
               <PriceTag tilt={-3.5} background={CREAM} color={INK}>
                 <span style={tagLabel}>Bought at fill</span>
                 <span style={tagPrice}>{money(fillPrice)}</span>
@@ -928,7 +926,6 @@ const Batch: React.FC = () => {
         )}
 
         <Landscape />
-        <BottomNav />
 
         {buying && info && offering && (
           <BuySheet

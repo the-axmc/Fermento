@@ -149,16 +149,16 @@ pub struct OfferingClosed {
 
 // ################## STORAGE TTL ##################
 //
-// Rent: every entry has a TTL. Writes extend the entry they touch and the
-// instance, so active batches pay to stay alive (skills.stellar.org guidance).
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
 
 const DAY_IN_LEDGERS: u32 = 17_280;
-const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
-const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
-
-fn keep_alive(e: &Env) {
-    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-}
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
 
 fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
     e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
@@ -209,7 +209,6 @@ impl BatchShares {
         matures_at: u64,
         caller: Address,
     ) {
-        keep_alive(e);
         if e.storage().persistent().has(&DataKey::Offering(batch_id)) {
             panic_with_error!(e, BatchSharesError::OfferingExists);
         }
@@ -243,7 +242,6 @@ impl BatchShares {
     /// Stop the primary sale. Redemption stays available.
     #[only_role(caller, "issuer")]
     pub fn close_offering(e: &Env, batch_id: u32, caller: Address) {
-        keep_alive(e);
         let mut offering = Self::load(e, batch_id);
         offering.open = false;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
@@ -255,7 +253,6 @@ impl BatchShares {
     /// ready early. Also what the demo uses to open redemption.
     #[only_role(caller, "issuer")]
     pub fn set_maturity(e: &Env, batch_id: u32, matures_at: u64, caller: Address) {
-        keep_alive(e);
         let mut offering = Self::load(e, batch_id);
         offering.matures_at = matures_at;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
@@ -273,7 +270,6 @@ impl BatchShares {
     /// token straight to the producer and receives freshly minted shares.
     #[when_not_paused]
     pub fn buy(e: &Env, batch_id: u32, buyer: Address, shares: i128) -> i128 {
-        keep_alive(e);
         buyer.require_auth();
         if shares <= 0 {
             panic_with_error!(e, BatchSharesError::InvalidAmount);
@@ -318,7 +314,6 @@ impl BatchShares {
     /// claim is recorded on the registry. Returns the claim id.
     #[when_not_paused]
     pub fn redeem(e: &Env, batch_id: u32, holder: Address, shares: i128) -> u32 {
-        keep_alive(e);
         holder.require_auth();
         if shares <= 0 {
             panic_with_error!(e, BatchSharesError::InvalidAmount);

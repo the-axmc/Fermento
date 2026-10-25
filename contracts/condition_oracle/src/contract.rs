@@ -145,16 +145,16 @@ pub struct MarkPublished {
 
 // ################## STORAGE TTL ##################
 //
-// Rent: every entry has a TTL. Writes extend the entry they touch and the
-// instance, so active batches pay to stay alive (skills.stellar.org guidance).
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
 
 const DAY_IN_LEDGERS: u32 = 17_280;
-const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
-const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
-
-fn keep_alive(e: &Env) {
-    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-}
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
 
 fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
     e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
@@ -179,7 +179,6 @@ impl ConditionOracle {
     /// month 0, 1, 2, ... since fill. The last point holds afterwards.
     #[only_role(caller, "curator")]
     pub fn set_curve(e: &Env, category: Symbol, points: Vec<u32>, caller: Address) {
-        keep_alive(e);
         if points.is_empty() {
             panic_with_error!(e, OracleError::InvalidCurve);
         }
@@ -194,7 +193,6 @@ impl ConditionOracle {
 
     #[only_role(caller, "curator")]
     pub fn register_batch(e: &Env, config: BatchConfig, caller: Address) {
-        keep_alive(e);
         if e.storage().persistent().has(&DataKey::Batch(config.batch_id)) {
             panic_with_error!(e, OracleError::BatchExists);
         }
@@ -220,7 +218,6 @@ impl ConditionOracle {
     /// Rotate the sensor key of a batch.
     #[only_role(caller, "curator")]
     pub fn set_sensor(e: &Env, batch_id: u32, sensor: BytesN<32>, caller: Address) {
-        keep_alive(e);
         let mut config = Self::load(e, batch_id);
         config.sensor = sensor;
         e.storage().persistent().set(&DataKey::Batch(batch_id), &config);
@@ -232,7 +229,6 @@ impl ConditionOracle {
     /// Post a sensor reading. Anyone may relay it; the signature by the
     /// batch's sensor key is what authorizes it.
     pub fn post_reading(e: &Env, batch_id: u32, reading: Reading, signature: BytesN<64>) -> bool {
-        keep_alive(e);
         if reading.batch_id != batch_id {
             panic_with_error!(e, OracleError::BatchMismatch);
         }
@@ -291,7 +287,6 @@ impl ConditionOracle {
     /// Compute the mark now, store it in the batch's history and emit it.
     /// Permissionless so a cron or the relayer can post one per epoch.
     pub fn publish_mark(e: &Env, batch_id: u32) -> Mark {
-        keep_alive(e);
         let mark = Self::mark(e, batch_id);
         let mut history: Vec<Mark> =
             e.storage().persistent().get(&DataKey::Marks(batch_id)).unwrap_or(Vec::new(e));

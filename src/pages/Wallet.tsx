@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import BottomNav from "../components/BottomNav";
+import Landscape from "../components/Landscape";
 import { useNavigate } from "react-router-dom";
 import Holdings from "../components/Holdings";
 import { USDC_ID } from "../contracts/client";
@@ -49,61 +49,6 @@ const SunArcs: React.FC = () => (
       <path d="M62 140 A38 38 0 0 1 138 140" stroke="#FFF4E2" />
     </g>
     <circle cx="100" cy="140" r="31" fill="#157A78" />
-  </svg>
-);
-
-const Landscape: React.FC = () => (
-  <svg
-    viewBox="0 80 390 180"
-    style={{
-      display: "block",
-      flexShrink: 0,
-      width: "calc(100% + 48px)",
-      height: "auto",
-      margin: "auto -24px 0",
-    }}
-    aria-hidden="true"
-  >
-    <path
-      d="M0 150 C60 108 120 104 190 130 C250 152 300 120 390 112 L390 260 L0 260 Z"
-      fill="#F5B82E"
-    />
-    <g fill="none" stroke="#E0951F" strokeWidth="2.5" strokeLinecap="round">
-      <path d="M20 152 C70 122 120 118 180 140" />
-      <path d="M30 166 C80 138 130 134 190 156" />
-      <path d="M210 150 C260 160 310 136 380 128" />
-      <path d="M214 166 C264 176 314 152 384 144" />
-    </g>
-    <path
-      d="M0 192 C70 160 150 166 220 186 C290 206 340 178 390 170 L390 260 L0 260 Z"
-      fill="#7CC36B"
-    />
-    <g fill="#5BA650">
-      <circle cx="40" cy="196" r="3" />
-      <circle cx="64" cy="190" r="3" />
-      <circle cx="88" cy="186" r="3" />
-      <circle cx="112" cy="185" r="3" />
-      <circle cx="136" cy="186" r="3" />
-      <circle cx="50" cy="210" r="3" />
-      <circle cx="76" cy="204" r="3" />
-      <circle cx="102" cy="200" r="3" />
-      <circle cx="128" cy="200" r="3" />
-      <circle cx="154" cy="203" r="3" />
-    </g>
-    <g fill="#1F5E3A">
-      <path d="M262 192 C256 170 260 150 266 136 C272 150 276 170 270 192 Z" />
-      <path d="M282 186 C277 168 280 152 285 140 C290 152 293 168 288 186 Z" />
-      <path d="M352 176 C347 158 350 142 355 130 C360 142 363 158 358 176 Z" />
-    </g>
-    <g>
-      <rect x="300" y="166" width="34" height="22" fill="#FFF4E2" />
-      <path d="M296 168 L317 152 L338 168 Z" fill="#C8341E" />
-      <rect x="313" y="176" width="8" height="12" fill="#2B1B3D" />
-    </g>
-    <path
-      d="M0 226 C80 204 170 212 250 228 C310 240 350 226 390 218 L390 260 L0 260 Z"
-      fill="#2E8B57"
-    />
   </svg>
 );
 
@@ -301,22 +246,14 @@ const Wallet: React.FC = () => {
   }, [modal]);
 
   return (
-    <div className="wallet" style={{ background: BG, overflow: "hidden" }}>
+    <div className="wallet" style={{ background: BG }}>
       <div
+        className="frame"
         style={{
-          position: "relative",
-          width: "100%",
-          maxWidth: 390,
-          minHeight: 1000,
-          margin: "0 auto",
-          boxSizing: "border-box",
           color: INK,
           fontFamily: SANS,
-          display: "flex",
-          flexDirection: "column",
-          gap: 18,
-          padding: "22px 24px 0",
-          overflow: "hidden",
+          gap: 16,
+          padding: "18px 24px 0",
         }}
       >
         <SunArcs />
@@ -512,10 +449,8 @@ const Wallet: React.FC = () => {
 
         <Landscape />
 
-        <BottomNav />
-
         {modal && (
-          <div style={{ position: "absolute", inset: 0, zIndex: 10 }}>
+          <div style={{ position: "fixed", inset: 0, zIndex: 30 }}>
             <button
               type="button"
               aria-label="Close"
@@ -537,8 +472,11 @@ const Wallet: React.FC = () => {
               aria-label="Add funds"
               style={{
                 position: "absolute",
-                left: 0,
-                right: 0,
+                left: "50%",
+                transform: "translateX(-50%)",
+                width: "100%",
+                maxWidth: "var(--frame)",
+                boxSizing: "border-box",
                 bottom: 0,
                 background: CREAM,
                 borderRadius: "32px 32px 0 0",

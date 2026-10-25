@@ -95,16 +95,16 @@ pub struct UnitsClaimed {
 
 // ################## STORAGE TTL ##################
 //
-// Rent: every entry has a TTL. Writes extend the entry they touch and the
-// instance, so active batches pay to stay alive (skills.stellar.org guidance).
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
 
 const DAY_IN_LEDGERS: u32 = 17_280;
-const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
-const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
-
-fn keep_alive(e: &Env) {
-    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-}
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
 
 fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
     e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
@@ -140,7 +140,6 @@ impl BatchRegistry {
     #[only_role(caller, "minter")]
     #[when_not_paused]
     pub fn mint(e: &Env, to: Address, token_id: u32, caller: Address) {
-        keep_alive(e);
         <Self as NonFungibleToken>::ContractType::mint_with_id(e, &to, token_id);
     }
 
@@ -149,7 +148,6 @@ impl BatchRegistry {
     #[only_role(caller, "minter")]
     #[when_not_paused]
     pub fn register_batch(e: &Env, to: Address, batch_id: u32, uri: String, caller: Address) {
-        keep_alive(e);
         <Self as NonFungibleToken>::ContractType::mint_with_id(e, &to, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
         keep_key(e, &BatchKey::Uri(batch_id));
@@ -163,7 +161,6 @@ impl BatchRegistry {
     /// Replace the metadata URI of an existing batch.
     #[only_role(caller, "minter")]
     pub fn set_token_uri(e: &Env, batch_id: u32, uri: String, caller: Address) {
-        keep_alive(e);
         // Panics with NonExistentToken when the batch was never minted.
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
@@ -173,7 +170,6 @@ impl BatchRegistry {
     /// Move a batch to a new lifecycle stage and emit `BatchStageChanged`.
     #[only_role(caller, "minter")]
     pub fn set_stage(e: &Env, batch_id: u32, stage: Symbol, caller: Address) {
-        keep_alive(e);
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Stage(batch_id), &stage);
         keep_key(e, &BatchKey::Stage(batch_id));
@@ -190,7 +186,6 @@ impl BatchRegistry {
     #[only_role(caller, "redeemer")]
     #[when_not_paused]
     pub fn claim(e: &Env, batch_id: u32, claimer: Address, units: u32, caller: Address) -> u32 {
-        keep_alive(e);
         if units == 0 {
             panic_with_error!(e, BatchRegistryError::ZeroUnits);
         }

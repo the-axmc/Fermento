@@ -252,18 +252,12 @@ const SignIn: React.FC = () => {
     busy !== null || !isPasskeySupported() || !account.configured;
 
   return (
-    <div className="signin" style={{ background: BG, overflow: "hidden" }}>
+    <div className="signin" style={{ background: BG }}>
       <div
+        className="frame"
         style={{
-          width: "100%",
-          maxWidth: 390,
-          minHeight: "100dvh",
-          margin: "0 auto",
-          boxSizing: "border-box",
           color: INK,
           fontFamily: SANS,
-          display: "flex",
-          flexDirection: "column",
           padding: "10px 24px 0",
         }}
       >

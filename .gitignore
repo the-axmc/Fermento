@@ -41,3 +41,5 @@ BUILD_PLAN.md
 
 # producer API store: holds sensor secrets
 deploy/batches.json
+# archived deployments (may hold sensor secrets)
+deploy/archive*/
