@@ -16,7 +16,7 @@ import {
 } from "react";
 import type { contract } from "@stellar/stellar-sdk";
 import type { TransactionResult } from "smart-account-kit";
-import { APP_NAME, NATIVE_TOKEN_ID, getKit, isAccountConfigured } from "./kit";
+import { APP_NAME, getKit, isAccountConfigured } from "./kit";
 
 export type AccountStatus = "loading" | "anonymous" | "connected";
 
@@ -81,12 +81,17 @@ export const AccountProvider = ({
 
   const create = useCallback(async (name: string) => {
     const kit = getKit();
+    // No autoFund: the relayer pays every fee, so the account never needs XLM,
+    // and Friendbot funding of a fresh account is the flakiest step on testnet.
     const result = await kit.createWallet(APP_NAME, name, {
       autoSubmit: true,
-      autoFund: NATIVE_TOKEN_ID !== "",
-      nativeTokenContract: NATIVE_TOKEN_ID || undefined,
       authenticatorSelection: { residentKey: "required" },
     });
+    // createWallet reports a failed deployment in submitResult instead of throwing.
+    if (result.submitResult && !result.submitResult.success) {
+      const e = result.submitResult.error;
+      throw new Error(`Account deployment failed [${e.code}]: ${e.message}`);
+    }
     setAddress(result.contractId);
     setStatus("connected");
     return result.contractId;

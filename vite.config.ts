@@ -33,6 +33,12 @@ export default defineConfig({
     host: true,
     port: 5173,
     // Tunnels used to reach the dev server from a phone (passkeys need HTTPS).
-    allowedHosts: [".loca.lt", ".trycloudflare.com", ".ngrok-free.app"],
+    allowedHosts: [
+      ".loca.lt",
+      ".trycloudflare.com",
+      ".ngrok-free.app",
+      ".lhr.life",
+      ".serveo.net",
+    ],
   },
 });
