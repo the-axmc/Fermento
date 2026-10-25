@@ -579,9 +579,10 @@ impl ConditionOracle {
         };
         let fee_per_share = config.fee_per_share_day * days;
 
-        let gross = config.fill_price * age_bps / BPS * condition_bps / BPS * care_bps / BPS
-            * producer_bps
-            / BPS;
+        // Multiply first, divide once: no rounding between factors. Even a
+        // u32::MAX curve point keeps this far inside i128.
+        let gross = config.fill_price * age_bps * condition_bps * care_bps * producer_bps
+            / (BPS * BPS * BPS * BPS);
         let value = if gross > fee_per_share { gross - fee_per_share } else { 0 };
 
         Breakdown {

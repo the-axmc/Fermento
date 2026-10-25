@@ -587,6 +587,8 @@ impl BatchShares {
             panic_with_error!(e, BatchSharesError::AlreadyInspected);
         }
         let circulating = offering.sold - offering.redeemed - escrow.refunded;
+        // Rounded per share before multiplying, as `held_per_share` filled the
+        // pool, so the release matches what was held to the stroop.
         let amount = offering.price * escrow.inspection_bps / BPS * circulating;
         escrow.pool -= amount;
         escrow.inspected = true;
