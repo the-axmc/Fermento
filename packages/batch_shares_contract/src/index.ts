@@ -62,6 +62,33 @@ upfront_bps: i128;
 }
 
 
+
+
+/**
+ * Shares a holder offers to other buyers. The shares wait in this contract
+ * until they are bought or the listing is cancelled.
+ */
+export interface Listing {
+  batch_id: u32;
+  created_at: u64;
+  /**
+ * Storage fees on these shares are settled up to here; the checkpoint
+ * moves to the buyer with the shares.
+ */
+fee_paid_until: u64;
+  id: u32;
+  /**
+ * Asking price per share in payment token units.
+ */
+price: i128;
+  seller: string;
+  /**
+ * Shares still for sale.
+ */
+shares: i128;
+}
+
+
 /**
  * Sale terms and state of one batch.
  */
@@ -174,8 +201,22 @@ export const BatchSharesError = {
   /**
    * Only the claim's holder or an inspector may confirm or refund it.
    */
-  616: {message:"NotClaimant"}
+  616: {message:"NotClaimant"},
+  617: {message:"ListingNotFound"},
+  /**
+   * The batch already has MAX_OPEN_LISTINGS open listings.
+   */
+  618: {message:"TooManyListings"},
+  /**
+   * Only the seller may cancel a listing.
+   */
+  619: {message:"NotSeller"},
+  /**
+   * A seller cannot buy from their own listing.
+   */
+  620: {message:"OwnListing"}
 }
+
 
 export const RoleTransferError = {
   2200: {message:"NoPendingTransfer"},
@@ -260,6 +301,12 @@ export interface Client {
   refund: ({batch_id, holder, shares}: {batch_id: u32, holder: string, shares: i128}, options?: MethodOptions) => Promise<AssembledTransaction<i128>>
 
   /**
+   * Construct and simulate a listing transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * One listing, open or not yet bought out.
+   */
+  listing: ({listing_id}: {listing_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Listing>>
+
+  /**
    * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
   unpause: ({caller}: {caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
@@ -283,6 +330,12 @@ export interface Client {
    * * `role` - The role to check for.
    */
   has_role: ({account, role}: {account: string, role: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u32>>>
+
+  /**
+   * Construct and simulate a listings transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Open listings of a batch, oldest first.
+   */
+  listings: ({batch_id}: {batch_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Array<Listing>>>
 
   /**
    * Construct and simulate a offering transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -346,6 +399,14 @@ export interface Client {
    * Storage fee `holder` would pay now to redeem `shares`.
    */
   accrued_fee: ({batch_id, holder, shares}: {batch_id: u32, holder: string, shares: i128}, options?: MethodOptions) => Promise<AssembledTransaction<i128>>
+
+  /**
+   * Construct and simulate a buy_listing transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Buy `shares` from a listing at its asking price. The seller receives the
+   * price minus RESALE_FEE_BPS, which goes to the treasury. Returns what the
+   * buyer paid.
+   */
+  buy_listing: ({listing_id, buyer, shares}: {listing_id: u32, buyer: string, shares: i128}, options?: MethodOptions) => Promise<AssembledTransaction<i128>>
 
   /**
    * Construct and simulate a circulating transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -413,6 +474,14 @@ export interface Client {
   set_treasury: ({treasury}: {treasury: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
+   * Construct and simulate a list_for_sale transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Offer `shares` to other buyers at `price` per share. The shares move
+   * into this contract until they are bought or the listing is cancelled.
+   * Returns the listing id.
+   */
+  list_for_sale: ({batch_id, seller, shares, price}: {batch_id: u32, seller: string, shares: i128, price: i128}, options?: MethodOptions) => Promise<AssembledTransaction<u32>>
+
+  /**
    * Construct and simulate a open_offering transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Open the primary sale of a batch. `share_token` is the SAC of the
    * batch's share asset and this contract must already be its admin. The
@@ -450,6 +519,12 @@ export interface Client {
    * * data - `[caller: Address]`
    */
   renounce_role: ({role, caller}: {role: string, caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
+   * Construct and simulate a cancel_listing transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Take the remaining shares of a listing back.
+   */
+  cancel_listing: ({listing_id, seller}: {listing_id: u32, seller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
    * Construct and simulate a close_offering transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -673,6 +748,9 @@ export class Client extends ContractClient {
   constructor(public readonly options: ContractClientOptions) {
     super(
       new ContractSpec([ "AAAAAQAAACRFc2Nyb3cgdGVybXMgYW5kIHN0YXRlIG9mIG9uZSBiYXRjaC4AAAAAAAAABkVzY3JvdwAAAAAABgAAAElEZWNsYXJlZCBmYWlsZWQgYnkgYW4gaW5zcGVjdG9yOiBzYWxlcyBhbmQgcmVkZW1wdGlvbiBzdG9wLCByZWZ1bmRzIG9wZW4uAAAAAAAACWRlZmF1bHRlZAAAAAAAAAEAAAAAAAAACWluc3BlY3RlZAAAAAAAAAEAAABBU2hhcmUgb2YgdGhlIHByaWNlIHJlbGVhc2VkIHdoZW4gYW4gaW5zcGVjdG9yIGNvbmZpcm1zIHRoZSBiYXRjaC4AAAAAAAAOaW5zcGVjdGlvbl9icHMAAAAAAAsAAABDSGVsZCBmb3Igc2hhcmVzIHN0aWxsIGluIGNpcmN1bGF0aW9uLiBDbGFpbXMgaG9sZCB0aGVpciBvd24gYW1vdW50LgAAAAAEcG9vbAAAAAsAAAAwU2hhcmVzIGhhbmRlZCBiYWNrIGZvciBhIHJlZnVuZCBhZnRlciBhIGRlZmF1bHQuAAAACHJlZnVuZGVkAAAACwAAADxTaGFyZSBvZiB0aGUgcHJpY2UgcGFpZCB0byB0aGUgcHJvZHVjZXIgYXQgcHVyY2hhc2UsIGluIGJwcy4AAAALdXBmcm9udF9icHMAAAAACw==",
+        "AAAABQAAAAAAAAAAAAAABkxpc3RlZAAAAAAAAQAAAAZsaXN0ZWQAAAAAAAUAAAAAAAAACGJhdGNoX2lkAAAABAAAAAEAAAAAAAAABnNlbGxlcgAAAAAAEwAAAAEAAAAAAAAACmxpc3RpbmdfaWQAAAAAAAQAAAAAAAAAAAAAAAZzaGFyZXMAAAAAAAsAAAAAAAAAAAAAAAVwcmljZQAAAAAAAAsAAAAAAAAAAg==",
+        "AAAABQAAAAAAAAAAAAAABlJlc29sZAAAAAAAAQAAAAZyZXNvbGQAAAAAAAcAAAAAAAAACGJhdGNoX2lkAAAABAAAAAEAAAAAAAAABWJ1eWVyAAAAAAAAEwAAAAEAAAAAAAAACmxpc3RpbmdfaWQAAAAAAAQAAAAAAAAAAAAAAAZzZWxsZXIAAAAAABMAAAAAAAAAAAAAAAZzaGFyZXMAAAAAAAsAAAAAAAAAAAAAAARwYWlkAAAACwAAAAAAAAAAAAAAA2ZlZQAAAAALAAAAAAAAAAI=",
+        "AAAAAQAAAHtTaGFyZXMgYSBob2xkZXIgb2ZmZXJzIHRvIG90aGVyIGJ1eWVycy4gVGhlIHNoYXJlcyB3YWl0IGluIHRoaXMgY29udHJhY3QKdW50aWwgdGhleSBhcmUgYm91Z2h0IG9yIHRoZSBsaXN0aW5nIGlzIGNhbmNlbGxlZC4AAAAAAAAAAAdMaXN0aW5nAAAAAAcAAAAAAAAACGJhdGNoX2lkAAAABAAAAAAAAAAKY3JlYXRlZF9hdAAAAAAABgAAAGdTdG9yYWdlIGZlZXMgb24gdGhlc2Ugc2hhcmVzIGFyZSBzZXR0bGVkIHVwIHRvIGhlcmU7IHRoZSBjaGVja3BvaW50Cm1vdmVzIHRvIHRoZSBidXllciB3aXRoIHRoZSBzaGFyZXMuAAAAAA5mZWVfcGFpZF91bnRpbAAAAAAABgAAAAAAAAACaWQAAAAAAAQAAAAuQXNraW5nIHByaWNlIHBlciBzaGFyZSBpbiBwYXltZW50IHRva2VuIHVuaXRzLgAAAAAABXByaWNlAAAAAAAACwAAAAAAAAAGc2VsbGVyAAAAAAATAAAAFlNoYXJlcyBzdGlsbCBmb3Igc2FsZS4AAAAAAAZzaGFyZXMAAAAAAAs=",
         "AAAAAAAAALlCdXkgYHNoYXJlc2Agb2YgYSBiYXRjaCBmb3IgYHByaWNlICogc2hhcmVzYCBpbiB0aGUgcGF5bWVudCB0b2tlbi4gVGhlCnByb2R1Y2VyIGdldHMgdGhlIHVwZnJvbnQgcGFydCBhdCBvbmNlIGFuZCB0aGlzIGNvbnRyYWN0IGhvbGRzIHRoZQpyZXN0OyB0aGUgYnV5ZXIgcmVjZWl2ZXMgZnJlc2hseSBtaW50ZWQgc2hhcmVzLgAAAAAAAANidXkAAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAVidXllcgAAAAAAABMAAAAAAAAABnNoYXJlcwAAAAAACwAAAAEAAAAL",
         "AAAAAQAAACJTYWxlIHRlcm1zIGFuZCBzdGF0ZSBvZiBvbmUgYmF0Y2guAAAAAAAAAAAACE9mZmVyaW5nAAAADAAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAANVN0b3JhZ2UgZmVlIHBlciBzaGFyZSBwZXIgZGF5IGluIHBheW1lbnQgdG9rZW4gdW5pdHMuAAAAAAAAEWZlZV9wZXJfc2hhcmVfZGF5AAAAAAAACwAAADZVbml4IHRpbWUgdGhlIGJhdGNoIHdhcyBmaWxsZWQ7IGZlZXMgYWNjcnVlIGZyb20gaGVyZS4AAAAAAAlmaWxsZWRfYXQAAAAAAAAGAAAAG1VuaXggdGltZSByZWRlbXB0aW9uIG9wZW5zLgAAAAAKbWF0dXJlc19hdAAAAAAABgAAAAAAAAAEb3BlbgAAAAEAAAAnUHJpY2UgcGVyIHNoYXJlIGluIHBheW1lbnQgdG9rZW4gdW5pdHMuAAAAAAVwcmljZQAAAAAAAAsAAAAbUmVjZWl2ZXMgdGhlIHNhbGUgcHJvY2VlZHMuAAAAAAhwcm9kdWNlcgAAABMAAABHU2hhcmVzIHJlZGVlbWVkIHNvIGZhciwgc28gYHNvbGQgLSByZWRlZW1lZGAgaXMgdGhlIGNpcmN1bGF0aW5nIHN1cHBseS4AAAAACHJlZGVlbWVkAAAACwAAADhTQUMgb2YgdGhlIHNoYXJlIGFzc2V0LiBUaGlzIGNvbnRyYWN0IG11c3QgYmUgaXRzIGFkbWluLgAAAAtzaGFyZV90b2tlbgAAAAATAAAAJlNoYXJlcyBhIGhvbGRlciBnaXZlcyB1cCBmb3Igb25lIHVuaXQuAAAAAAAPc2hhcmVzX3Blcl91bml0AAAAAAsAAAAAAAAABHNvbGQAAAALAAAAAAAAAAx0b3RhbF9zaGFyZXMAAAAL",
         "AAAAAQAAANdGZWUgYm9va2tlZXBpbmcgZm9yIGEgaG9sZGVyIGluIG9uZSBiYXRjaC4gU2hhcmVzIGJvdWdodCBvbiB0aGUgREVYIGFyZSBub3QKa25vd24gaGVyZSwgc28gdGhlIGZlZSBpcyBjaGFyZ2VkIG9uIHRoZSBzaGFyZXMgcHJlc2VudGVkIGF0IHJlZGVtcHRpb24sCmZyb20gdGhlIGhvbGRlcidzIGNoZWNrcG9pbnQgb3IgdGhlIGZpbGwgZGF0ZSB3aGVuIHRoZXkgaGF2ZSBub25lLgAAAAAAAAAACFBvc2l0aW9uAAAAAgAAADVVbml4IHRpbWUgdXAgdG8gd2hpY2ggc3RvcmFnZSBmZWVzIGhhdmUgYmVlbiBzZXR0bGVkLgAAAAAAAA5mZWVfcGFpZF91bnRpbAAAAAAABgAAAAAAAAAGc2hhcmVzAAAAAAAL",
@@ -683,9 +761,11 @@ export class Client extends ContractClient {
         "AAAAAAAAARpSZWRlZW0gYHNoYXJlc2AgZm9yIHVuaXRzIG9uY2UgdGhlIGJhdGNoIGlzIG1hdHVyZS4gVGhlIGhvbGRlciBnaXZlcwpiYWNrIHRoZSBzaGFyZXMsIHBheXMgdGhlIGFjY3J1ZWQgc3RvcmFnZSBmZWUgdG8gdGhlIHRyZWFzdXJ5LCBhbmQgYQpjbGFpbSBpcyByZWNvcmRlZCBvbiB0aGUgcmVnaXN0cnkuIFRoZSBtb25leSBzdGlsbCBoZWxkIGZvciB0aGVzZQpzaGFyZXMgbW92ZXMgdG8gdGhlIGNsYWltIHVudGlsIHRoZSB1bml0cyBhcmUgY29sbGVjdGVkLiBSZXR1cm5zIHRoZQpjbGFpbSBpZC4AAAAAAAZyZWRlZW0AAAAAAAMAAAAAAAAACGJhdGNoX2lkAAAABAAAAAAAAAAGaG9sZGVyAAAAAAATAAAAAAAAAAZzaGFyZXMAAAAAAAsAAAABAAAABA==",
         "AAAAAAAAAIRBZnRlciBhIGRlZmF1bHQsIGhhbmQgYmFjayBgc2hhcmVzYCAoYnVybmVkKSBmb3IgdGhlIG1vbmV5IHN0aWxsIGhlbGQKZm9yIHRoZW0uIFdvcmtzIGZvciBzaGFyZXMgYm91Z2h0IGFueXdoZXJlLCBpbmNsdWRpbmcgdGhlIERFWC4AAAAGcmVmdW5kAAAAAAADAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAABmhvbGRlcgAAAAAAEwAAAAAAAAAGc2hhcmVzAAAAAAALAAAAAQAAAAs=",
         "AAAAAQAAAEFNb25leSBoZWxkIGZvciBvbmUgY2xhaW0sIHJlbGVhc2VkIHRvIHRoZSBwcm9kdWNlciBvbiBjb2xsZWN0aW9uLgAAAAAAAAAAAAALQ2xhaW1Fc2Nyb3cAAAAABAAAAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAABmhvbGRlcgAAAAAAEwAAAAAAAAAHc2V0dGxlZAAAAAAB",
+        "AAAAAAAAAChPbmUgbGlzdGluZywgb3BlbiBvciBub3QgeWV0IGJvdWdodCBvdXQuAAAAB2xpc3RpbmcAAAAAAQAAAAAAAAAKbGlzdGluZ19pZAAAAAAABAAAAAEAAAfQAAAAB0xpc3RpbmcA",
         "AAAAAAAAAAAAAAAHdW5wYXVzZQAAAAABAAAAAAAAAAZjYWxsZXIAAAAAABMAAAAA",
         "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAACAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAAAAAACG9wZXJhdG9yAAAAEwAAAAA=",
         "AAAAAAAAAXJSZXR1cm5zIGBTb21lKGluZGV4KWAgaWYgdGhlIGFjY291bnQgaGFzIHRoZSBzcGVjaWZpZWQgcm9sZSwKd2hlcmUgYGluZGV4YCBpcyB0aGUgcG9zaXRpb24gb2YgdGhlIGFjY291bnQgZm9yIHRoYXQgcm9sZSwKYW5kIGNhbiBiZSB1c2VkIHRvIHF1ZXJ5IFtgQWNjZXNzQ29udHJvbDo6Z2V0X3JvbGVfbWVtYmVyKClgXS4KUmV0dXJucyBgTm9uZWAgaWYgdGhlIGFjY291bnQgZG9lcyBub3QgaGF2ZSB0aGUgc3BlY2lmaWVkIHJvbGUuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byBjaGVjay4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byBjaGVjayBmb3IuAAAAAAAIaGFzX3JvbGUAAAACAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABHJvbGUAAAARAAAAAQAAA+gAAAAE",
+        "AAAAAAAAACdPcGVuIGxpc3RpbmdzIG9mIGEgYmF0Y2gsIG9sZGVzdCBmaXJzdC4AAAAACGxpc3RpbmdzAAAAAQAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAA+oAAAfQAAAAB0xpc3RpbmcA",
         "AAAAAAAAAAAAAAAIb2ZmZXJpbmcAAAABAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAH0AAAAAhPZmZlcmluZw==",
         "AAAAAAAAAAAAAAAIcmVnaXN0cnkAAAAAAAAAAQAAABM=",
         "AAAAAAAAAAAAAAAIdHJlYXN1cnkAAAAAAAAAAQAAABM=",
@@ -699,18 +779,22 @@ export class Client extends ContractClient {
         "AAAABQAAAAAAAAAAAAAADk9mZmVyaW5nT3BlbmVkAAAAAAABAAAAD29mZmVyaW5nX29wZW5lZAAAAAAFAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAAAAAAAAtzaGFyZV90b2tlbgAAAAATAAAAAAAAAAAAAAAIcHJvZHVjZXIAAAATAAAAAAAAAAAAAAAFcHJpY2UAAAAAAAALAAAAAAAAAAAAAAAMdG90YWxfc2hhcmVzAAAACwAAAAAAAAAC",
         "AAAABQAAAAAAAAAAAAAADlNoYXJlc1JlZGVlbWVkAAAAAAABAAAAD3NoYXJlc19yZWRlZW1lZAAAAAAGAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAAAAAAAAZob2xkZXIAAAAAABMAAAABAAAAAAAAAAZzaGFyZXMAAAAAAAsAAAAAAAAAAAAAAAV1bml0cwAAAAAAAAQAAAAAAAAAAAAAAANmZWUAAAAACwAAAAAAAAAAAAAACGNsYWltX2lkAAAABAAAAAAAAAAC",
         "AAAAAAAAADZTdG9yYWdlIGZlZSBgaG9sZGVyYCB3b3VsZCBwYXkgbm93IHRvIHJlZGVlbSBgc2hhcmVzYC4AAAAAAAthY2NydWVkX2ZlZQAAAAADAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAABmhvbGRlcgAAAAAAEwAAAAAAAAAGc2hhcmVzAAAAAAALAAAAAQAAAAs=",
+        "AAAAAAAAAJ1CdXkgYHNoYXJlc2AgZnJvbSBhIGxpc3RpbmcgYXQgaXRzIGFza2luZyBwcmljZS4gVGhlIHNlbGxlciByZWNlaXZlcyB0aGUKcHJpY2UgbWludXMgUkVTQUxFX0ZFRV9CUFMsIHdoaWNoIGdvZXMgdG8gdGhlIHRyZWFzdXJ5LiBSZXR1cm5zIHdoYXQgdGhlCmJ1eWVyIHBhaWQuAAAAAAAAC2J1eV9saXN0aW5nAAAAAAMAAAAAAAAACmxpc3RpbmdfaWQAAAAAAAQAAAAAAAAABWJ1eWVyAAAAAAAAEwAAAAAAAAAGc2hhcmVzAAAAAAALAAAAAQAAAAs=",
         "AAAAAAAAADBTaGFyZXMgaW4gY2lyY3VsYXRpb246IHNvbGQgaGVyZSBtaW51cyByZWRlZW1lZC4AAAALY2lyY3VsYXRpbmcAAAAAAQAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAAAs=",
         "AAAAAAAAArdSZXZva2VzIGEgcm9sZSBmcm9tIGFuIGFjY291bnQuClRvIHJldm9rZSB0aGUgY2FsbGVyJ3Mgb3duIHJvbGUsIHVzZQpbYEFjY2Vzc0NvbnRyb2w6OnJlbm91bmNlX3JvbGUoKWBdIGluc3RlYWQuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byByZXZva2UgdGhlIHJvbGUgZnJvbS4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byByZXZva2UuCiogYGNhbGxlcmAgLSBUaGUgYWRkcmVzcyBvZiB0aGUgY2FsbGVyLCBtdXN0IGJlIHRoZSBhZG1pbiBvciBoYXMgdGhlCmBSb2xlQWRtaW5gIGZvciB0aGUgYHJvbGVgLgoKIyBFcnJvcnMKCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlVuYXV0aG9yaXplZGBdIC0gSWYgdGhlIGBjYWxsZXJgIGRvZXMgbm90IGhhdmUKZW5vdWdoIHByaXZpbGVnZXMuCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlJvbGVOb3RIZWxkYF0gLSBJZiB0aGUgYGFjY291bnRgIGRvZXNuJ3QgaGF2ZQp0aGUgcm9sZS4KKiBbYEFjY2Vzc0NvbnRyb2xFcnJvcjo6Um9sZUlzRW1wdHlgXSAtIElmIHRoZSByb2xlIGhhcyBubyBtZW1iZXJzLgoKIyBFdmVudHMKCiogdG9waWNzIC0gYFsicm9sZV9yZXZva2VkIiwgcm9sZTogU3ltYm9sLCBhY2NvdW50OiBBZGRyZXNzXWAKKiBkYXRhIC0gYFtjYWxsZXI6IEFkZHJlc3NdYAAAAAALcmV2b2tlX3JvbGUAAAAAAwAAAAAAAAAHYWNjb3VudAAAAAATAAAAAAAAAARyb2xlAAAAEQAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAA==",
-        "AAAABAAAAAAAAAAAAAAAEEJhdGNoU2hhcmVzRXJyb3IAAAARAAAAAAAAAA5PZmZlcmluZ0V4aXN0cwAAAAACWAAAAAAAAAAQT2ZmZXJpbmdOb3RGb3VuZAAAAlkAAAAAAAAADk9mZmVyaW5nQ2xvc2VkAAAAAAJaAAAAAAAAAA1JbnZhbGlkQW1vdW50AAAAAAACWwAAAAAAAAAHU29sZE91dAAAAAJcAAAAAAAAAAlOb3RNYXR1cmUAAAAAAAJdAAAAMVJlZGVtcHRpb24gYW1vdW50IGlzIG5vdCBhIHdob2xlIG51bWJlciBvZiB1bml0cy4AAAAAAAANTm90V2hvbGVVbml0cwAAAAAAAl4AAAAAAAAADEludmFsaWRUZXJtcwAAAl8AAAA1Tm8gaW5zcGVjdG9yIGhhcyBhdHRlc3RlZCB0aGlzIGJhdGNoIG9uIHRoZSByZWdpc3RyeS4AAAAAAAALTm90QXR0ZXN0ZWQAAAACYAAAAC1Nb3JlIHNoYXJlcyB0aGFuIHRoZSBhdHRlc3RlZCB1bml0cyBjYW4gYmFjay4AAAAAAAAPRXhjZWVkc0F0dGVzdGVkAAAAAmEAAAAdVGhlIG9mZmVyaW5nIHByZWRhdGVzIGVzY3Jvdy4AAAAAAAAITm9Fc2Nyb3cAAAJiAAAAHlRoZSBiYXRjaCB3YXMgZGVjbGFyZWQgZmFpbGVkLgAAAAAACURlZmF1bHRlZAAAAAAAAmMAAAAzUmVmdW5kcyBuZWVkIHRoZSBiYXRjaCB0byBiZSBkZWNsYXJlZCBmYWlsZWQgZmlyc3QuAAAAAAxOb3REZWZhdWx0ZWQAAAJkAAAAAAAAABBBbHJlYWR5SW5zcGVjdGVkAAACZQAAAAAAAAANQ2xhaW1Ob3RGb3VuZAAAAAAAAmYAAAAAAAAADkFscmVhZHlTZXR0bGVkAAAAAAJnAAAAQU9ubHkgdGhlIGNsYWltJ3MgaG9sZGVyIG9yIGFuIGluc3BlY3RvciBtYXkgY29uZmlybSBvciByZWZ1bmQgaXQuAAAAAAAAC05vdENsYWltYW50AAAAAmg=",
+        "AAAABAAAAAAAAAAAAAAAEEJhdGNoU2hhcmVzRXJyb3IAAAAVAAAAAAAAAA5PZmZlcmluZ0V4aXN0cwAAAAACWAAAAAAAAAAQT2ZmZXJpbmdOb3RGb3VuZAAAAlkAAAAAAAAADk9mZmVyaW5nQ2xvc2VkAAAAAAJaAAAAAAAAAA1JbnZhbGlkQW1vdW50AAAAAAACWwAAAAAAAAAHU29sZE91dAAAAAJcAAAAAAAAAAlOb3RNYXR1cmUAAAAAAAJdAAAAMVJlZGVtcHRpb24gYW1vdW50IGlzIG5vdCBhIHdob2xlIG51bWJlciBvZiB1bml0cy4AAAAAAAANTm90V2hvbGVVbml0cwAAAAAAAl4AAAAAAAAADEludmFsaWRUZXJtcwAAAl8AAAA1Tm8gaW5zcGVjdG9yIGhhcyBhdHRlc3RlZCB0aGlzIGJhdGNoIG9uIHRoZSByZWdpc3RyeS4AAAAAAAALTm90QXR0ZXN0ZWQAAAACYAAAAC1Nb3JlIHNoYXJlcyB0aGFuIHRoZSBhdHRlc3RlZCB1bml0cyBjYW4gYmFjay4AAAAAAAAPRXhjZWVkc0F0dGVzdGVkAAAAAmEAAAAdVGhlIG9mZmVyaW5nIHByZWRhdGVzIGVzY3Jvdy4AAAAAAAAITm9Fc2Nyb3cAAAJiAAAAHlRoZSBiYXRjaCB3YXMgZGVjbGFyZWQgZmFpbGVkLgAAAAAACURlZmF1bHRlZAAAAAAAAmMAAAAzUmVmdW5kcyBuZWVkIHRoZSBiYXRjaCB0byBiZSBkZWNsYXJlZCBmYWlsZWQgZmlyc3QuAAAAAAxOb3REZWZhdWx0ZWQAAAJkAAAAAAAAABBBbHJlYWR5SW5zcGVjdGVkAAACZQAAAAAAAAANQ2xhaW1Ob3RGb3VuZAAAAAAAAmYAAAAAAAAADkFscmVhZHlTZXR0bGVkAAAAAAJnAAAAQU9ubHkgdGhlIGNsYWltJ3MgaG9sZGVyIG9yIGFuIGluc3BlY3RvciBtYXkgY29uZmlybSBvciByZWZ1bmQgaXQuAAAAAAAAC05vdENsYWltYW50AAAAAmgAAAAAAAAAD0xpc3RpbmdOb3RGb3VuZAAAAAJpAAAANlRoZSBiYXRjaCBhbHJlYWR5IGhhcyBNQVhfT1BFTl9MSVNUSU5HUyBvcGVuIGxpc3RpbmdzLgAAAAAAD1Rvb01hbnlMaXN0aW5ncwAAAAJqAAAAJU9ubHkgdGhlIHNlbGxlciBtYXkgY2FuY2VsIGEgbGlzdGluZy4AAAAAAAAJTm90U2VsbGVyAAAAAAACawAAACtBIHNlbGxlciBjYW5ub3QgYnV5IGZyb20gdGhlaXIgb3duIGxpc3RpbmcuAAAAAApPd25MaXN0aW5nAAAAAAJs",
         "AAAAAAAAADVNb25leSBoZWxkIGZvciBhIGNsYWltIHVudGlsIGl0cyB1bml0cyBhcmUgY29sbGVjdGVkLgAAAAAAAAxjbGFpbV9lc2Nyb3cAAAABAAAAAAAAAAhjbGFpbV9pZAAAAAQAAAABAAAD6AAAB9AAAAALQ2xhaW1Fc2Nyb3cA",
         "AAAAAAAAAAAAAAAMZ2V0X3Bvc2l0aW9uAAAAAgAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAZob2xkZXIAAAAAABMAAAABAAAH0AAAAAhQb3NpdGlvbg==",
         "AAAAAAAAAFRBZnRlciBhIGRlZmF1bHQsIHRoZSBob2xkZXIgb2YgYW4gdW5jb2xsZWN0ZWQgY2xhaW0gdGFrZXMgYmFjayB3aGF0CndhcyBoZWxkIGZvciBpdC4AAAAMcmVmdW5kX2NsYWltAAAAAQAAAAAAAAAIY2xhaW1faWQAAAAEAAAAAQAAAAs=",
         "AAAAAAAAAH9Nb3ZlIHRoZSBtYXR1cml0eSBkYXRlLCBmb3IgZXhhbXBsZSB3aGVuIHRoZSBjZWxsYXIgZGVjbGFyZXMgdGhlIGJhdGNoCnJlYWR5IGVhcmx5LiBBbHNvIHdoYXQgdGhlIGRlbW8gdXNlcyB0byBvcGVuIHJlZGVtcHRpb24uAAAAAAxzZXRfbWF0dXJpdHkAAAADAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAACm1hdHVyZXNfYXQAAAAAAAYAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
         "AAAAAAAAAAAAAAAMc2V0X3RyZWFzdXJ5AAAAAQAAAAAAAAAIdHJlYXN1cnkAAAATAAAAAA==",
+        "AAAABQAAAAAAAAAAAAAAEExpc3RpbmdDYW5jZWxsZWQAAAABAAAAEWxpc3RpbmdfY2FuY2VsbGVkAAAAAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAAAAAAAAKbGlzdGluZ19pZAAAAAAABAAAAAAAAAAAAAAABnNoYXJlcwAAAAAACwAAAAAAAAAC",
         "AAAAAAAAAAAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAYAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAGaXNzdWVyAAAAAAATAAAAAAAAAAZwYXVzZXIAAAAAABMAAAAAAAAADXBheW1lbnRfdG9rZW4AAAAAAAATAAAAAAAAAAhyZWdpc3RyeQAAABMAAAAAAAAACHRyZWFzdXJ5AAAAEwAAAAA=",
+        "AAAAAAAAAKJPZmZlciBgc2hhcmVzYCB0byBvdGhlciBidXllcnMgYXQgYHByaWNlYCBwZXIgc2hhcmUuIFRoZSBzaGFyZXMgbW92ZQppbnRvIHRoaXMgY29udHJhY3QgdW50aWwgdGhleSBhcmUgYm91Z2h0IG9yIHRoZSBsaXN0aW5nIGlzIGNhbmNlbGxlZC4KUmV0dXJucyB0aGUgbGlzdGluZyBpZC4AAAAAAA1saXN0X2Zvcl9zYWxlAAAAAAAABAAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAZzZWxsZXIAAAAAABMAAAAAAAAABnNoYXJlcwAAAAAACwAAAAAAAAAFcHJpY2UAAAAAAAALAAAAAQAAAAQ=",
         "AAAAAAAAAORPcGVuIHRoZSBwcmltYXJ5IHNhbGUgb2YgYSBiYXRjaC4gYHNoYXJlX3Rva2VuYCBpcyB0aGUgU0FDIG9mIHRoZQpiYXRjaCdzIHNoYXJlIGFzc2V0IGFuZCB0aGlzIGNvbnRyYWN0IG11c3QgYWxyZWFkeSBiZSBpdHMgYWRtaW4uIFRoZQpiYXRjaCBtdXN0IGJlIGF0dGVzdGVkIG9uIHRoZSByZWdpc3RyeSwgYW5kIGB0b3RhbF9zaGFyZXNgIG1heSBub3QKZXhjZWVkIHRoZSBhdHRlc3RlZCB1bml0cy4AAAANb3Blbl9vZmZlcmluZwAAAAAAAAoAAAAAAAAACGJhdGNoX2lkAAAABAAAAAAAAAALc2hhcmVfdG9rZW4AAAAAEwAAAAAAAAAIcHJvZHVjZXIAAAATAAAAAAAAAAVwcmljZQAAAAAAAAsAAAAAAAAADHRvdGFsX3NoYXJlcwAAAAsAAAAAAAAAEWZlZV9wZXJfc2hhcmVfZGF5AAAAAAAACwAAAAAAAAAPc2hhcmVzX3Blcl91bml0AAAAAAsAAAAAAAAACWZpbGxlZF9hdAAAAAAAAAYAAAAAAAAACm1hdHVyZXNfYXQAAAAAAAYAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
         "AAAAAAAAAAAAAAANcGF5bWVudF90b2tlbgAAAAAAAAAAAAABAAAAEw==",
         "AAAAAAAAAhZBbGxvd3MgYW4gYWNjb3VudCB0byByZW5vdW5jZSBhIHJvbGUgYXNzaWduZWQgdG8gaXRzZWxmLgpVc2VycyBjYW4gb25seSByZW5vdW5jZSByb2xlcyBmb3IgdGhlaXIgb3duIGFjY291bnQuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byByZW5vdW5jZS4KKiBgY2FsbGVyYCAtIFRoZSBhZGRyZXNzIG9mIHRoZSBjYWxsZXIsIG11c3QgYmUgdGhlIGFjY291bnQgdGhhdCBoYXMgdGhlCnJvbGUuCgojIEVycm9ycwoKKiBbYEFjY2Vzc0NvbnRyb2xFcnJvcjo6Um9sZU5vdEhlbGRgXSAtIElmIHRoZSBgY2FsbGVyYCBkb2Vzbid0IGhhdmUgdGhlCnJvbGUuCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlJvbGVJc0VtcHR5YF0gLSBJZiB0aGUgcm9sZSBoYXMgbm8gbWVtYmVycy4KCiMgRXZlbnRzCgoqIHRvcGljcyAtIGBbInJvbGVfcmV2b2tlZCIsIHJvbGU6IFN5bWJvbCwgYWNjb3VudDogQWRkcmVzc11gCiogZGF0YSAtIGBbY2FsbGVyOiBBZGRyZXNzXWAAAAAAAA1yZW5vdW5jZV9yb2xlAAAAAAAAAgAAAAAAAAAEcm9sZQAAABEAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
+        "AAAAAAAAACxUYWtlIHRoZSByZW1haW5pbmcgc2hhcmVzIG9mIGEgbGlzdGluZyBiYWNrLgAAAA5jYW5jZWxfbGlzdGluZwAAAAAAAgAAAAAAAAAKbGlzdGluZ19pZAAAAAAABAAAAAAAAAAGc2VsbGVyAAAAAAATAAAAAA==",
         "AAAAAAAAADJTdG9wIHRoZSBwcmltYXJ5IHNhbGUuIFJlZGVtcHRpb24gc3RheXMgYXZhaWxhYmxlLgAAAAAADmNsb3NlX29mZmVyaW5nAAAAAAACAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
         "AAAAAAAAAMVSZXR1cm5zIHRoZSBhZG1pbiByb2xlIGZvciBhIHNwZWNpZmljIHJvbGUuCklmIG5vIGFkbWluIHJvbGUgaXMgZXhwbGljaXRseSBzZXQsIHJldHVybnMgYE5vbmVgLgoKIyBBcmd1bWVudHMKCiogYGVgIC0gQWNjZXNzIHRvIFNvcm9iYW4gZW52aXJvbm1lbnQuCiogYHJvbGVgIC0gVGhlIHJvbGUgdG8gcXVlcnkgdGhlIGFkbWluIHJvbGUgZm9yLgAAAAAAAA5nZXRfcm9sZV9hZG1pbgAAAAAAAQAAAAAAAAAEcm9sZQAAABEAAAABAAAD6AAAABE=",
         "AAAAAAAAAfZBbGxvd3MgdGhlIGN1cnJlbnQgYWRtaW4gdG8gcmVub3VuY2UgdGhlaXIgcm9sZSwgbWFraW5nIHRoZSBjb250cmFjdApwZXJtYW5lbnRseSBhZG1pbi1sZXNzLiBUaGlzIGlzIHVzZWZ1bCBmb3IgZGVjZW50cmFsaXphdGlvbiBwdXJwb3NlcwpvciB3aGVuIHRoZSBhZG1pbiByb2xlIGlzIG5vIGxvbmdlciBuZWVkZWQuIE9uY2UgdGhlIGFkbWluIGlzCnJlbm91bmNlZCwgaXQgY2Fubm90IGJlIHJlaW5zdGF0ZWQuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KCiMgRXJyb3JzCgoqIFtgQWNjZXNzQ29udHJvbEVycm9yOjpBZG1pbk5vdFNldGBdIC0gSWYgbm8gYWRtaW4gYWNjb3VudCBpcyBzZXQuCgojIEV2ZW50cwoKKiB0b3BpY3MgLSBgWyJhZG1pbl9yZW5vdW5jZWQiLCBhZG1pbjogQWRkcmVzc11gCiogZGF0YSAtIGBbXWAKCiMgTm90ZXMKCiogQXV0aG9yaXphdGlvbiBmb3IgdGhlIGN1cnJlbnQgYWRtaW4gaXMgcmVxdWlyZWQuAAAAAAAOcmVub3VuY2VfYWRtaW4AAAAAAAAAAAAA",
@@ -745,9 +829,11 @@ export class Client extends ContractClient {
         paused: this.txFromJSON<boolean>,
         redeem: this.txFromJSON<u32>,
         refund: this.txFromJSON<i128>,
+        listing: this.txFromJSON<Listing>,
         unpause: this.txFromJSON<null>,
         upgrade: this.txFromJSON<null>,
         has_role: this.txFromJSON<Option<u32>>,
+        listings: this.txFromJSON<Array<Listing>>,
         offering: this.txFromJSON<Offering>,
         registry: this.txFromJSON<string>,
         treasury: this.txFromJSON<string>,
@@ -755,6 +841,7 @@ export class Client extends ContractClient {
         remaining: this.txFromJSON<i128>,
         grant_role: this.txFromJSON<null>,
         accrued_fee: this.txFromJSON<i128>,
+        buy_listing: this.txFromJSON<i128>,
         circulating: this.txFromJSON<i128>,
         revoke_role: this.txFromJSON<null>,
         claim_escrow: this.txFromJSON<Option<ClaimEscrow>>,
@@ -762,9 +849,11 @@ export class Client extends ContractClient {
         refund_claim: this.txFromJSON<i128>,
         set_maturity: this.txFromJSON<null>,
         set_treasury: this.txFromJSON<null>,
+        list_for_sale: this.txFromJSON<u32>,
         open_offering: this.txFromJSON<null>,
         payment_token: this.txFromJSON<string>,
         renounce_role: this.txFromJSON<null>,
+        cancel_listing: this.txFromJSON<null>,
         close_offering: this.txFromJSON<null>,
         get_role_admin: this.txFromJSON<Option<string>>,
         renounce_admin: this.txFromJSON<null>,

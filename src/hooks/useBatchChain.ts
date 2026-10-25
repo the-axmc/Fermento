@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Buffer } from "buffer";
-import type { Escrow, Offering } from "batch_shares_contract";
+import type { Escrow, Listing, Offering } from "batch_shares_contract";
 import type { Attestation } from "batch_registry_contract";
 import type {
   Breakdown,
@@ -31,6 +31,8 @@ export interface BatchChain {
   heldPerShare?: bigint;
   /** Latest independent inspection: the batch exists and holds this many units. */
   attestation?: Attestation;
+  /** Open resale listings from other holders, cheapest first. */
+  listings: Listing[];
   mark?: Mark;
   /** Every factor of the mark: age, cellar, care, producer rating. */
   breakdown?: Breakdown;
@@ -69,6 +71,7 @@ export const readBatch = async (batchId: number) => {
     escrow,
     heldPerShare,
     attestation,
+    listings,
     breakdown,
     stats,
     history,
@@ -81,6 +84,7 @@ export const readBatch = async (batchId: number) => {
     shares ? quiet(() => shares.escrow(id)) : undefined,
     shares ? quiet(() => shares.held_per_share_now(id)) : undefined,
     registry ? quiet(() => registry.attestation(id)) : undefined,
+    shares ? quiet(() => shares.listings(id)) : undefined,
     oracle ? quiet(() => oracle.breakdown(id)) : undefined,
     oracle ? quiet(() => oracle.get_stats(id)) : undefined,
     oracle ? quiet(() => oracle.mark_history(id)) : undefined,
@@ -101,6 +105,9 @@ export const readBatch = async (batchId: number) => {
     escrow: escrow ?? undefined,
     heldPerShare,
     attestation: attestation ?? undefined,
+    listings: [...(listings ?? [])].sort((a, b) =>
+      a.price < b.price ? -1 : a.price > b.price ? 1 : 0,
+    ),
     mark,
     breakdown,
     stats,
@@ -120,6 +127,7 @@ export const useBatchChain = (
   const [state, setState] = useState<Omit<BatchChain, "refresh" | "offline">>({
     history: [],
     checkins: [],
+    listings: [],
     loading: !offline,
   });
   const [tick, setTick] = useState(0);
@@ -153,6 +161,7 @@ export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
         offering?: Offering;
         escrow?: Escrow;
         heldPerShare?: bigint;
+        listings?: Listing[];
         mark?: Mark;
         stats?: Stats;
       }
@@ -168,7 +177,7 @@ export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
       const entries = await Promise.all(
         ids.map(async (id) => {
           const shares = SHARES_ID ? getShares() : undefined;
-          const [offering, escrow, heldPerShare, mark, stats] =
+          const [offering, escrow, heldPerShare, listings, mark, stats] =
             await Promise.all([
               shares
                 ? quiet(() => shares.offering({ batch_id: id }))
@@ -176,6 +185,9 @@ export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
               shares ? quiet(() => shares.escrow({ batch_id: id })) : undefined,
               shares
                 ? quiet(() => shares.held_per_share_now({ batch_id: id }))
+                : undefined,
+              shares
+                ? quiet(() => shares.listings({ batch_id: id }))
                 : undefined,
               ORACLE_ID
                 ? quiet(() => getOracle().mark({ batch_id: id }))
@@ -190,6 +202,7 @@ export const useBatchesChain = (ids: number[], intervalMs = 20_000) => {
               offering,
               escrow: escrow ?? undefined,
               heldPerShare,
+              listings,
               mark,
               stats,
             },
