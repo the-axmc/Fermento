@@ -49,6 +49,8 @@ interface Draft {
   price: string;
   started: string;
   ready: string;
+  /** Write the batch to an NFC card right after it is registered. */
+  nfc: boolean;
 }
 
 const empty: Draft = {
@@ -62,6 +64,7 @@ const empty: Draft = {
   price: "4.00",
   started: "",
   ready: "",
+  nfc: false,
 };
 
 const loadDraft = (): Draft => {
@@ -141,6 +144,7 @@ const AddFerment: React.FC = () => {
   const [busy, setBusy] = React.useState<"locate" | "list" | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState(false);
+  const formRef = React.useRef<HTMLDivElement>(null);
 
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) =>
     setD((p) => ({ ...p, [k]: v }));
@@ -239,7 +243,9 @@ const AddFerment: React.FC = () => {
       }
       localStorage.removeItem(DRAFT_KEY);
       // Straight to the producer's own page for the batch: link the card, post the first check-in.
-      navigate(`/batch/${body.batchId}/manage`);
+      navigate(`/batch/${body.batchId}/manage`, {
+        state: { linkCard: d.nfc },
+      });
     } catch (err) {
       setError(
         err instanceof Error && err.message.includes("Failed to fetch")
@@ -270,143 +276,215 @@ const AddFerment: React.FC = () => {
           margin: "0 auto",
         }}
       >
-        {/* Header over the sky */}
+        {/* First screen: sky, icon and title only; the form is a scroll away */}
         <div
           style={{
+            minHeight: "100dvh",
             display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "18px 24px 0",
-            minHeight: 44,
+            flexDirection: "column",
           }}
         >
-          <Link
-            to="/market"
-            aria-label="Back to the market"
-            style={{
-              width: 44,
-              height: 44,
-              marginLeft: -12,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: INK,
-            }}
-          >
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M15 5l-7 7 7 7" />
-            </svg>
-          </Link>
+          {/* Header over the sky */}
           <div
             style={{
-              flex: 1,
-              textAlign: "center",
-              fontFamily: DISPLAY,
-              fontSize: 20,
-              lineHeight: 1,
-              color: RED,
-              marginRight: 32,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "18px 24px 0",
+              minHeight: 44,
             }}
           >
-            Fermentos
-            <br />
-            Norberto <span style={{ color: INK }}>&amp;</span> Raimunda
+            <Link
+              to="/market"
+              aria-label="Back to the market"
+              style={{
+                width: 44,
+                height: 44,
+                marginLeft: -12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: INK,
+              }}
+            >
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M15 5l-7 7 7 7" />
+              </svg>
+            </Link>
+            <div
+              style={{
+                flex: 1,
+                textAlign: "center",
+                fontFamily: DISPLAY,
+                fontSize: 20,
+                lineHeight: 1,
+                color: RED,
+                marginRight: 32,
+              }}
+            >
+              Fermentos
+              <br />
+              Norberto <span style={{ color: INK }}>&amp;</span> Raimunda
+            </div>
+          </div>
+
+          {/* Rainbow */}
+          <svg
+            className="produce-rainbow"
+            viewBox="0 0 390 150"
+            preserveAspectRatio="xMidYMax slice"
+            style={{ display: "block", width: "100%", marginTop: 8 }}
+            aria-hidden="true"
+          >
+            <g fill="none" strokeWidth="26">
+              <path
+                d="M-40 160 A235 235 0 0 1 430 160"
+                stroke="#8A4F28"
+                opacity="0.7"
+              />
+              <path d="M-14 160 A209 209 0 0 1 404 160" stroke="#C8341E" />
+              <path d="M12 160 A183 183 0 0 1 378 160" stroke="#F07C2B" />
+              <path d="M38 160 A157 157 0 0 1 352 160" stroke="#F7A8C8" />
+            </g>
+          </svg>
+
+          {/* Sheet */}
+          <div
+            style={{
+              position: "relative",
+              flex: 1,
+              marginTop: -36,
+              background: CREAM,
+              borderRadius: "32px 32px 0 0",
+              padding: "0 24px calc(var(--nav-clear) + 8px)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 20,
+            }}
+          >
+            <span
+              style={{
+                width: 96,
+                height: 96,
+                marginTop: -48,
+                alignSelf: "center",
+                borderRadius: "50%",
+                background: RED,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <svg
+                width="44"
+                height="54"
+                viewBox="0 0 44 54"
+                aria-hidden="true"
+              >
+                <rect x="7" y="12" width="30" height="40" rx="6" fill={CREAM} />
+                <rect
+                  x="10"
+                  y="4"
+                  width="24"
+                  height="10"
+                  rx="3"
+                  fill="#F5B82E"
+                />
+                <path
+                  d="M22 24v16M14 32h16"
+                  stroke={RED}
+                  strokeWidth="4.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </span>
+
+            <div style={{ textAlign: "center", marginTop: -8 }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontWeight: 800,
+                  fontSize: 40,
+                  lineHeight: 1,
+                  letterSpacing: "-0.04em",
+                }}
+              >
+                Add a ferment
+              </h1>
+              <p
+                style={{
+                  margin: "10px 0 0",
+                  fontSize: 17,
+                  lineHeight: 1.35,
+                  color: INK_SOFT,
+                }}
+              >
+                A kombucha from your kitchen or a cask from your quinta. List a
+                batch and let people own a share of it.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                formRef.current?.scrollIntoView({ behavior: "smooth" })
+              }
+              style={{
+                marginTop: "auto",
+                alignSelf: "center",
+                border: 0,
+                padding: "8px 12px",
+                background: "transparent",
+                fontFamily: SANS,
+                fontWeight: 800,
+                fontSize: 16,
+                color: TEAL,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 4,
+                cursor: "pointer",
+              }}
+            >
+              Fill in the batch
+              <svg
+                width="22"
+                height="22"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M5 9l7 7 7-7" />
+              </svg>
+            </button>
           </div>
         </div>
 
-        {/* Rainbow */}
-        <svg
-          className="produce-rainbow"
-          viewBox="0 0 390 150"
-          preserveAspectRatio="xMidYMax slice"
-          style={{ display: "block", width: "100%", marginTop: 8 }}
-          aria-hidden="true"
-        >
-          <g fill="none" strokeWidth="26">
-            <path
-              d="M-40 160 A235 235 0 0 1 430 160"
-              stroke="#8A4F28"
-              opacity="0.7"
-            />
-            <path d="M-14 160 A209 209 0 0 1 404 160" stroke="#C8341E" />
-            <path d="M12 160 A183 183 0 0 1 378 160" stroke="#F07C2B" />
-            <path d="M38 160 A157 157 0 0 1 352 160" stroke="#F7A8C8" />
-          </g>
-        </svg>
-
-        {/* Sheet */}
+        {/* Form */}
         <div
+          ref={formRef}
           style={{
-            position: "relative",
-            marginTop: -36,
             background: CREAM,
-            borderRadius: "32px 32px 0 0",
-            padding: "0 24px calc(var(--nav-clear) + 8px)",
+            padding: "28px 24px calc(var(--nav-clear) + 8px)",
             display: "flex",
             flexDirection: "column",
             gap: 20,
           }}
         >
-          <span
-            style={{
-              width: 96,
-              height: 96,
-              marginTop: -48,
-              alignSelf: "center",
-              borderRadius: "50%",
-              background: RED,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <svg width="44" height="54" viewBox="0 0 44 54" aria-hidden="true">
-              <rect x="7" y="12" width="30" height="40" rx="6" fill={CREAM} />
-              <rect x="10" y="4" width="24" height="10" rx="3" fill="#F5B82E" />
-              <path
-                d="M22 24v16M14 32h16"
-                stroke={RED}
-                strokeWidth="4.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          </span>
-
-          <div style={{ textAlign: "center", marginTop: -8 }}>
-            <h1
-              style={{
-                margin: 0,
-                fontWeight: 800,
-                fontSize: 40,
-                lineHeight: 1,
-                letterSpacing: "-0.04em",
-              }}
-            >
-              Add a ferment
-            </h1>
-            <p
-              style={{
-                margin: "10px 0 0",
-                fontSize: 17,
-                lineHeight: 1.35,
-                color: INK_SOFT,
-              }}
-            >
-              A kombucha from your kitchen or a cask from your quinta. List a
-              batch and let people own a share of it.
-            </p>
-          </div>
-
           <Field
             title="Pick an image"
             right={
@@ -678,6 +756,76 @@ const AddFerment: React.FC = () => {
               />
             </Field>
           </div>
+
+          <Field
+            title="NFC card"
+            hintText={
+              d.nfc
+                ? "Right after registering, hold a blank sticker to your phone. It gets the batch link and its fingerprint goes on chain."
+                : "You can link a card later from the batch page."
+            }
+          >
+            <button
+              type="button"
+              role="switch"
+              aria-checked={d.nfc}
+              onClick={() => set("nfc", !d.nfc)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "10px 0",
+                border: 0,
+                borderBottom: `2px solid ${RULE}`,
+                background: "transparent",
+                fontFamily: SANS,
+                color: INK,
+                textAlign: "left",
+                cursor: "pointer",
+              }}
+            >
+              <svg
+                width="28"
+                height="28"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={d.nfc ? TEAL : RED}
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="12" r="1.6" fill={d.nfc ? TEAL : RED} />
+                <path d="M11.5 8.5a5 5 0 0 1 0 7M14.5 6a8.5 8.5 0 0 1 0 12M17.5 3.5a12 12 0 0 1 0 17" />
+              </svg>
+              <span style={{ flex: 1, fontSize: 18, fontWeight: 700 }}>
+                Write this batch to an NFC card
+              </span>
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 48,
+                  height: 28,
+                  flexShrink: 0,
+                  borderRadius: 14,
+                  padding: 3,
+                  boxSizing: "border-box",
+                  background: d.nfc ? TEAL : "rgba(43, 27, 61, 0.18)",
+                  display: "flex",
+                  justifyContent: d.nfc ? "flex-end" : "flex-start",
+                  transition: "background 0.15s",
+                }}
+              >
+                <span
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: "50%",
+                    background: CREAM,
+                  }}
+                />
+              </span>
+            </button>
+          </Field>
 
           {error && (
             <p
