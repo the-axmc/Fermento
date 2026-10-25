@@ -2,7 +2,8 @@ import React from "react";
 import { Link } from "react-router-dom";
 import BottomNav from "../components/BottomNav";
 import Landscape from "../components/Landscape";
-import { batches, type BatchInfo } from "../data/batches";
+import type { BatchInfo } from "../data/batches";
+import { useCatalogue } from "../hooks/useCatalogue";
 import { useBatchesChain } from "../hooks/useBatchChain";
 import { money, shortDate } from "../lib/format";
 import "./Market.css";
@@ -274,9 +275,11 @@ const Market: React.FC = () => {
   const [view, setView] = React.useState<View>("list");
   const [q, setQ] = React.useState("");
 
-  const chain = useBatchesChain(batches.map((b) => b.batchId));
+  const catalogue = useCatalogue();
+  const ids = React.useMemo(() => catalogue.map((b) => b.batchId), [catalogue]);
+  const chain = useBatchesChain(ids);
 
-  const all: Row[] = batches.map((b) => {
+  const all: Row[] = catalogue.map((b) => {
     const live = chain.rows[b.batchId];
     const offering = live?.offering;
     const left =

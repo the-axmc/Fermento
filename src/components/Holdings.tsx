@@ -2,7 +2,8 @@ import React from "react";
 import { Link } from "react-router-dom";
 import type { Offering } from "batch_shares_contract";
 import { SHARES_ID, getShares } from "../contracts/client";
-import { batches, type BatchInfo } from "../data/batches";
+import type { BatchInfo } from "../data/batches";
+import { useCatalogue } from "../hooks/useCatalogue";
 import { useAccount } from "../hooks/useAccount";
 import { useBatchesChain } from "../hooks/useBatchChain";
 import { readBalance } from "../wallet/balances";
@@ -265,7 +266,8 @@ const button = (enabled: boolean): React.CSSProperties => ({
 /** Shares the signed-in account holds in each known batch, with Redeem and Send. */
 const Holdings: React.FC = () => {
   const account = useAccount();
-  const ids = React.useMemo(() => batches.map((b) => b.batchId), []);
+  const catalogue = useCatalogue();
+  const ids = React.useMemo(() => catalogue.map((b) => b.batchId), [catalogue]);
   const chain = useBatchesChain(ids);
   const [balances, setBalances] = React.useState<Record<number, bigint>>({});
   const [action, setAction] = React.useState<Action>(null);
@@ -291,7 +293,7 @@ const Holdings: React.FC = () => {
     };
   }, [account.address, chain.rows, tick]);
 
-  const holdings: Holding[] = batches.flatMap((info) => {
+  const holdings: Holding[] = catalogue.flatMap((info) => {
     const row = chain.rows[info.batchId];
     const shares = balances[info.batchId] ?? 0n;
     if (!row?.offering || shares === 0n) return [];

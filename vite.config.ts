@@ -32,7 +32,15 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // Producer API (scripts/producer-api.ts) lists batches with the admin key.
+    proxy: { "/api": "http://localhost:8787" },
     // Tunnels used to reach the dev server from a phone (passkeys need HTTPS).
-    allowedHosts: [".loca.lt", ".trycloudflare.com", ".ngrok-free.app"],
+    allowedHosts: [
+      ".loca.lt",
+      ".trycloudflare.com",
+      ".ngrok-free.app",
+      ".lhr.life",
+      ".serveo.net",
+    ],
   },
 });

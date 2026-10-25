@@ -2,7 +2,7 @@ import React from "react";
 import { Link, useParams } from "react-router-dom";
 import type { UnitClaim } from "batch_registry_contract";
 import { REGISTRY_ID, getRegistry } from "../contracts/client";
-import { findBatch } from "../data/batches";
+import { useCatalogue } from "../hooks/useCatalogue";
 import { shortAddress } from "../lib/format";
 
 /* ---------------------------------- Theme --------------------------------- */
@@ -36,7 +36,10 @@ const Claim: React.FC = () => {
       .catch(() => setClaim(null));
   }, [claimId]);
 
-  const info = claim ? findBatch(claim.batch_id) : undefined;
+  const catalogue = useCatalogue();
+  const info = claim
+    ? catalogue.find((b) => b.batchId === claim.batch_id)
+    : undefined;
   const valid = !!claim;
 
   const row: React.CSSProperties = {
