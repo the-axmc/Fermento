@@ -54,12 +54,22 @@ const deployed = envFile();
 const ORACLE_ID = process.env.ORACLE_ID ?? deployed.ORACLE_ID;
 if (!ORACLE_ID)
   throw new Error("ORACLE_ID missing (run scripts/deploy-testnet.sh)");
-const sensor = Keypair.fromSecret(
-  process.env.SENSOR_SECRET ??
-    (() => {
-      throw new Error("SENSOR_SECRET missing");
-    })(),
-);
+// Sensor key: SENSOR_SECRET, or the key the producer API generated for this batch.
+const storedSensor = (() => {
+  try {
+    const rows = JSON.parse(
+      readFileSync(new URL("../deploy/batches.json", import.meta.url), "utf8"),
+    ) as { batchId: number; sensorSecret?: string }[];
+    return rows.find((b) => b.batchId === batchId)?.sensorSecret;
+  } catch {
+    return undefined;
+  }
+})();
+const sensorSecret = process.env.SENSOR_SECRET ?? storedSensor;
+if (!sensorSecret) {
+  throw new Error("SENSOR_SECRET missing and batch not in deploy/batches.json");
+}
+const sensor = Keypair.fromSecret(sensorSecret);
 const relayer = process.env.RELAYER_SECRET
   ? Keypair.fromSecret(process.env.RELAYER_SECRET)
   : sensor;

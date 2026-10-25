@@ -2,7 +2,8 @@ import React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import BottomNav from "../components/BottomNav";
 import Landscape from "../components/Landscape";
-import { findBatch, type BatchInfo } from "../data/batches";
+import type { BatchInfo } from "../data/batches";
+import { useCatalogue } from "../hooks/useCatalogue";
 import MarkChart from "../components/MarkChart";
 import { useAccount } from "../hooks/useAccount";
 import { useBalance } from "../hooks/useBalance";
@@ -641,7 +642,8 @@ const bigButton: React.CSSProperties = {
 
 const Batch: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const info = findBatch(id);
+  const catalogue = useCatalogue();
+  const info = catalogue.find((b) => b.batchId === Number(id));
   const chain = useBatchChain(info?.batchId);
   const [buying, setBuying] = React.useState(false);
 

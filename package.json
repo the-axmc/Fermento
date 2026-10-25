@@ -20,7 +20,8 @@
     "lint:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "format": "prettier . --write",
     "prepare": "husky install",
-    "sensor": "node --experimental-strip-types scripts/sensor-sim.ts"
+    "sensor": "node --experimental-strip-types scripts/sensor-sim.ts",
+    "producer-api": "node --experimental-strip-types scripts/producer-api.ts"
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.7.5",

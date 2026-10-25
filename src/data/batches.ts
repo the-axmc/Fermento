@@ -6,7 +6,17 @@
  * producer, description, label colours. Keyed by the on-chain batch id.
  */
 
-export type Kind = "wine" | "cheese" | "kombucha";
+export type Kind =
+  | "kombucha"
+  | "kefir"
+  | "cider"
+  | "mead"
+  | "wine"
+  | "fortified"
+  | "vinegar"
+  | "kimchi"
+  | "cheese"
+  | "other";
 
 export interface BatchInfo {
   /** On-chain batch id, shared by registry, shares and oracle. */
@@ -25,6 +35,8 @@ export interface BatchInfo {
   category: string;
   /** What one unit is when redeeming: a bottle, a wheel, a case. */
   unit: string;
+  /** Account that receives sales, set for batches listed through the producer API. */
+  producerAddress?: string;
   /* Artwork */
   glass: string;
   cap: string;
@@ -35,7 +47,7 @@ export interface BatchInfo {
 export const batches: BatchInfo[] = [
   {
     batchId: 14,
-    kind: "wine",
+    kind: "fortified",
     cat: "Moscatel",
     name: "Moscatel de Setúbal",
     label: "Batch Nº 014",
@@ -54,7 +66,7 @@ export const batches: BatchInfo[] = [
   },
   {
     batchId: 15,
-    kind: "wine",
+    kind: "fortified",
     cat: "Moscatel",
     name: "Moscatel de Setúbal",
     label: "Batch Nº 015",

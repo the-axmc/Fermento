@@ -38,3 +38,6 @@ src/contracts/*
 !src/contracts/client.ts
 
 BUILD_PLAN.md
+
+# producer API store: holds sensor secrets
+deploy/batches.json
