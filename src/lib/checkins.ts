@@ -33,5 +33,25 @@ export const CHECKIN_KINDS: {
   { kind: "other", label: "Update", hint: "Anything else", tile: "#7FD8D6" },
 ];
 
+/** Posted by the independent inspector only; not offered to producers. */
+export const INSPECTION_KINDS: typeof CHECKIN_KINDS = [
+  {
+    kind: "visit",
+    label: "Inspector visit",
+    hint: "Independent check of the batch",
+    tile: "#7CC36B",
+  },
+  {
+    kind: "failed",
+    label: "Failed inspection",
+    hint: "Missing, swapped or spoiled",
+    tile: "#C8341E",
+  },
+];
+
+export const isInspection = (kind: string) =>
+  INSPECTION_KINDS.some((k) => k.kind === kind);
+
 export const kindOf = (kind: string) =>
-  CHECKIN_KINDS.find((k) => k.kind === kind) ?? CHECKIN_KINDS[5];
+  [...CHECKIN_KINDS, ...INSPECTION_KINDS].find((k) => k.kind === kind) ??
+  CHECKIN_KINDS[5];

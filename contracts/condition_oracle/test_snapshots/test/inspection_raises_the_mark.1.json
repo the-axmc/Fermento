@@ -8,6 +8,31 @@
     [],
     [
       [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "function_name": "grant_role",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "symbol": "inspector"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
         {
           "function": {
@@ -174,31 +199,7 @@
         }
       ]
     ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "set_producer",
-              "args": [
-                {
-                  "u32": 14
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
@@ -206,53 +207,22 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "post_checkin",
+              "function_name": "post_inspection",
               "args": [
                 {
                   "u32": 14
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "symbol": "visit"
                 },
                 {
-                  "symbol": "lab"
-                },
-                {
-                  "string": "pH down to 3.2, sugar at 4 Bx."
+                  "string": "Cask 14 sealed, level at the bung."
                 },
                 {
                   "u32": 100
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "post_checkin",
-              "args": [
-                {
-                  "u32": 14
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                },
-                {
-                  "symbol": "lab"
-                },
-                {
-                  "string": "pH down to 3.2, sugar at 4 Bx."
-                },
-                {
-                  "u32": 100
                 }
               ]
             }
@@ -270,22 +240,22 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "post_checkin",
+              "function_name": "post_inspection",
               "args": [
                 {
                   "u32": 14
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  "symbol": "visit"
                 },
                 {
-                  "symbol": "lab"
-                },
-                {
-                  "string": "pH down to 3.2, sugar at 4 Bx."
+                  "string": "Cask 14 sealed, level at the bung."
                 },
                 {
                   "u32": 40
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 }
               ]
             }
@@ -298,7 +268,7 @@
   "ledger": {
     "protocol_version": 28,
     "sequence_number": 0,
-    "timestamp": 86490000,
+    "timestamp": 86400000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -311,7 +281,7 @@
           "data": {
             "contract_data": {
               "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "801925984706572462"
@@ -498,7 +468,7 @@
                       "symbol": "bonus_bps"
                     },
                     "val": {
-                      "i128": "350"
+                      "i128": "700"
                     }
                   },
                   {
@@ -506,7 +476,7 @@
                       "symbol": "count"
                     },
                     "val": {
-                      "u32": 3
+                      "u32": 2
                     }
                   },
                   {
@@ -514,7 +484,7 @@
                       "symbol": "last_timestamp"
                     },
                     "val": {
-                      "u64": "86490000"
+                      "u64": "86400000"
                     }
                   }
                 ]
@@ -552,7 +522,7 @@
                           "symbol": "bonus_bps"
                         },
                         "val": {
-                          "i128": "250"
+                          "i128": "500"
                         }
                       },
                       {
@@ -560,7 +530,7 @@
                           "symbol": "kind"
                         },
                         "val": {
-                          "symbol": "lab"
+                          "symbol": "visit"
                         }
                       },
                       {
@@ -568,7 +538,7 @@
                           "symbol": "note"
                         },
                         "val": {
-                          "string": "pH down to 3.2, sugar at 4 Bx."
+                          "string": "Cask 14 sealed, level at the bung."
                         }
                       },
                       {
@@ -604,7 +574,7 @@
                           "symbol": "bonus_bps"
                         },
                         "val": {
-                          "i128": "0"
+                          "i128": "200"
                         }
                       },
                       {
@@ -612,7 +582,7 @@
                           "symbol": "kind"
                         },
                         "val": {
-                          "symbol": "lab"
+                          "symbol": "visit"
                         }
                       },
                       {
@@ -620,59 +590,7 @@
                           "symbol": "note"
                         },
                         "val": {
-                          "string": "pH down to 3.2, sugar at 4 Bx."
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "poster"
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "score"
-                        },
-                        "val": {
-                          "u32": 100
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "timestamp"
-                        },
-                        "val": {
-                          "u64": "86403600"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "map": [
-                      {
-                        "key": {
-                          "symbol": "bonus_bps"
-                        },
-                        "val": {
-                          "i128": "100"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "kind"
-                        },
-                        "val": {
-                          "symbol": "lab"
-                        }
-                      },
-                      {
-                        "key": {
-                          "symbol": "note"
-                        },
-                        "val": {
-                          "string": "pH down to 3.2, sugar at 4 Bx."
+                          "string": "Cask 14 sealed, level at the bung."
                         }
                       },
                       {
@@ -696,7 +614,7 @@
                           "symbol": "timestamp"
                         },
                         "val": {
-                          "u64": "86490000"
+                          "u64": "86400000"
                         }
                       }
                     ]
@@ -798,6 +716,9 @@
                   },
                   {
                     "symbol": "upgrader"
+                  },
+                  {
+                    "symbol": "inspector"
                   }
                 ]
               }
@@ -877,22 +798,25 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "Producer"
+                    "symbol": "HasRole"
                   },
                   {
-                    "u32": 14
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  },
+                  {
+                    "symbol": "inspector"
                   }
                 ]
               },
               "durability": "persistent",
               "val": {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                "u32": 0
               }
             }
           },
           "ext": "v0"
         },
-        "live_until": 241920
+        "live_until": 1555200
       },
       {
         "entry": {
@@ -965,6 +889,50 @@
                           "symbol": "role"
                         },
                         "val": {
+                          "symbol": "inspector"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "RoleAccounts"
+                  },
+                  {
+                    "map": [
+                      {
+                        "key": {
+                          "symbol": "index"
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "role"
+                        },
+                        "val": {
                           "symbol": "upgrader"
                         }
                       }
@@ -996,6 +964,33 @@
                   },
                   {
                     "symbol": "curator"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 1
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "RoleAccountsCount"
+                  },
+                  {
+                    "symbol": "inspector"
                   }
                 ]
               },
@@ -1169,26 +1164,6 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "4270020994084947596"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "ledger_key_nonce": {
                   "nonce": "4837995959683129791"
                 }
               },
@@ -1242,7 +1217,7 @@
                     "symbol": "bonus_bps"
                   },
                   "val": {
-                    "i128": "100"
+                    "i128": "200"
                   }
                 },
                 {
@@ -1250,7 +1225,7 @@
                     "symbol": "kind"
                   },
                   "val": {
-                    "symbol": "lab"
+                    "symbol": "visit"
                   }
                 },
                 {
@@ -1266,7 +1241,7 @@
                     "symbol": "timestamp"
                   },
                   "val": {
-                    "u64": "86490000"
+                    "u64": "86400000"
                   }
                 }
               ]

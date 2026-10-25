@@ -1,6 +1,6 @@
 import React from "react";
 import type { Checkin } from "condition_oracle_contract";
-import { kindOf } from "../lib/checkins";
+import { isInspection, kindOf } from "../lib/checkins";
 import { money, shortDate } from "../lib/format";
 import { INK, INK_SOFT, MONO, RULE, TEAL_DARK } from "../lib/theme";
 
@@ -146,7 +146,9 @@ const Checkins: React.FC<{
                   ? `Listed at ${money(fillPrice)}`
                   : bonus > 0
                     ? `▲ +${(bonus / 100).toFixed(2)} % care · score ${c.score}`
-                    : `score ${c.score} · no bonus today`}
+                    : isInspection(c.kind)
+                      ? `inspector · score ${c.score}`
+                      : `self-reported score ${c.score} · no effect on value`}
               </span>
             </div>
           </div>

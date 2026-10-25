@@ -19,6 +19,7 @@ struct Setup<'a> {
     env: Env,
     oracle: ConditionOracleClient<'a>,
     curator: Address,
+    inspector: Address,
     sensor: SigningKey,
 }
 
@@ -28,10 +29,12 @@ fn setup<'a>() -> Setup<'a> {
     env.ledger().set_timestamp(T0);
     let admin = Address::generate(&env);
     let curator = Address::generate(&env);
-    let addr = env.register(ConditionOracle, (admin, curator.clone()));
+    let addr = env.register(ConditionOracle, (admin.clone(), curator.clone()));
     let oracle = ConditionOracleClient::new(&env, &addr);
+    let inspector = Address::generate(&env);
+    oracle.grant_role(&inspector, &Symbol::new(&env, "inspector"), &admin);
     let sensor = SigningKey::from_bytes(&[7u8; 32]);
-    Setup { env, oracle, curator, sensor }
+    Setup { env, oracle, curator, inspector, sensor }
 }
 
 fn sensor_key(env: &Env, key: &SigningKey) -> BytesN<32> {
@@ -288,8 +291,18 @@ fn checkin(s: &Setup, producer: &Address, score: u32) -> i128 {
     )
 }
 
+fn inspection(s: &Setup, score: u32) -> i128 {
+    s.oracle.post_inspection(
+        &14,
+        &Symbol::new(&s.env, "visit"),
+        &soroban_sdk::String::from_str(&s.env, "Cask 14 sealed, level at the bung."),
+        &score,
+        &s.inspector,
+    )
+}
+
 #[test]
-fn checkin_by_producer_raises_the_mark() {
+fn checkin_by_producer_is_recorded_but_not_rewarded() {
     let s = setup();
     register_14(&s);
     let producer = Address::generate(&s.env);
@@ -297,22 +310,53 @@ fn checkin_by_producer_raises_the_mark() {
     assert_eq!(s.oracle.producer(&14), Some(producer.clone()));
 
     let before = s.oracle.mark(&14).value;
-    let care = checkin(&s, &producer, 100);
-    // One perfect check-in: 1.025x.
-    assert_eq!(care, 10_250);
+    // A perfect self-reported score does not move the mark.
+    assert_eq!(checkin(&s, &producer, 100), 10_000);
     let b = s.oracle.breakdown(&14);
-    assert_eq!(b.care_bps, 10_250);
+    assert_eq!(b.care_bps, 10_000);
     assert_eq!(b.checkins, 1);
-    assert_eq!(b.value, before * 10_250 / 10_000);
-    assert_eq!(s.oracle.mark(&14).value, b.value);
+    assert_eq!(b.value, before);
 
     let history = s.oracle.checkins(&14);
     assert_eq!(history.len(), 1);
     let c = history.get(0).unwrap();
     assert_eq!(c.score, 100);
-    assert_eq!(c.bonus_bps, 250);
+    assert_eq!(c.bonus_bps, 0);
     assert_eq!(c.poster, producer);
     assert_eq!(c.kind, Symbol::new(&s.env, "lab"));
+}
+
+#[test]
+fn inspection_raises_the_mark() {
+    let s = setup();
+    register_14(&s);
+    let before = s.oracle.mark(&14).value;
+    // One perfect visit: 1.05x.
+    assert_eq!(inspection(&s, 100), 10_500);
+    let b = s.oracle.breakdown(&14);
+    assert_eq!(b.care_bps, 10_500);
+    assert_eq!(b.value, before * 10_500 / 10_000);
+    let c = s.oracle.checkins(&14).get(0).unwrap();
+    assert_eq!(c.poster, s.inspector);
+    assert_eq!(c.bonus_bps, 500);
+    // A weaker visit earns less, scaled by its score.
+    assert_eq!(inspection(&s, 40), 10_700);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2000)")]
+fn producer_cannot_post_an_inspection() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    s.oracle.post_inspection(
+        &14,
+        &Symbol::new(&s.env, "visit"),
+        &soroban_sdk::String::from_str(&s.env, "All good."),
+        &100,
+        &producer,
+    );
 }
 
 #[test]
@@ -345,41 +389,28 @@ fn checkin_score_over_100_panics() {
 }
 
 #[test]
-fn second_checkin_same_day_is_recorded_but_not_rewarded() {
-    let s = setup();
-    register_14(&s);
-    let producer = Address::generate(&s.env);
-    s.oracle.set_producer(&14, &producer, &s.curator);
-    checkin(&s, &producer, 100);
-    s.env.ledger().set_timestamp(T0 + 3600);
-    assert_eq!(checkin(&s, &producer, 100), 10_250);
-    assert_eq!(s.oracle.checkins(&14).len(), 2);
-    assert_eq!(s.oracle.get_care(&14).count, 2);
-    // A day later it counts again, scaled by the score.
-    s.env.ledger().set_timestamp(T0 + DAY + 3600);
-    assert_eq!(checkin(&s, &producer, 40), 10_350);
-}
-
-#[test]
 fn care_bonus_is_capped_and_decays_when_the_producer_goes_quiet() {
     let s = setup();
     register_14(&s);
     let producer = Address::generate(&s.env);
     s.oracle.set_producer(&14, &producer, &s.curator);
     let mut care = 0;
-    for i in 0..10u64 {
-        s.env.ledger().set_timestamp(T0 + i * DAY);
-        care = checkin(&s, &producer, 100);
+    for i in 0..5u64 {
+        s.env.ledger().set_timestamp(T0 + i * 30 * DAY);
+        care = inspection(&s, 100);
     }
-    // 10 x 250 would be 2 500; the cap is 2 000.
+    // 5 x 500 would be 2 500; the cap is 2 000.
     assert_eq!(care, 12_000);
-    let last = T0 + 9 * DAY;
+    let last = T0 + 4 * 30 * DAY;
     // Within the grace period nothing is lost.
     s.env.ledger().set_timestamp(last + 14 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 12_000);
     // 10 days past it: 10 x 25 bps gone.
     s.env.ledger().set_timestamp(last + 24 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 11_750);
+    // A producer check-in restarts the grace period without adding bonus.
+    checkin(&s, &producer, 100);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 12_000);
     // Long silence returns to neutral, never below.
     s.env.ledger().set_timestamp(last + 400 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 10_000);
@@ -410,5 +441,23 @@ fn producer_rating_scales_the_mark() {
 #[should_panic(expected = "Error(Contract, #711)")]
 fn rating_outside_band_panics() {
     let s = setup();
-    s.oracle.set_rating(&Address::generate(&s.env), &25_000, &true, &s.curator);
+    // 1.5x was allowed before; the band is now 0.8x to 1.2x.
+    s.oracle.set_rating(&Address::generate(&s.env), &15_000, &true, &s.curator);
+}
+
+#[test]
+fn rating_stored_under_the_old_band_is_clamped() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    // What a 2.0x rating written by the previous contract version looks like.
+    let rating = crate::contract::Rating { index_bps: 20_000, certified: true, updated_at: T0 };
+    s.env.as_contract(&s.oracle.address, || {
+        s.env
+            .storage()
+            .persistent()
+            .set(&crate::contract::DataKey::Rating(producer.clone()), &rating);
+    });
+    assert_eq!(s.oracle.breakdown(&14).producer_bps, 12_000);
 }

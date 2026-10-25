@@ -5,10 +5,10 @@ extern crate std;
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
-    token, Address, Env,
+    token, Address, BytesN, Env, Symbol,
 };
 
-use crate::contract::{BatchShares, BatchSharesClient};
+use crate::contract::{Attestation, BatchShares, BatchSharesClient, DataKey};
 
 const DAY: u64 = 86_400;
 const USDC: i128 = 10_000_000; // 7 decimals
@@ -18,6 +18,7 @@ const USDC: i128 = 10_000_000; // 7 decimals
 pub enum MockKey {
     Count,
     Last,
+    Attested(u32),
 }
 
 #[contracttype]
@@ -47,6 +48,20 @@ impl MockRegistry {
     pub fn last(e: Env) -> Option<MockClaim> {
         e.storage().instance().get(&MockKey::Last)
     }
+
+    pub fn attest(e: Env, batch_id: u32, units: u32) {
+        let record = Attestation {
+            inspector: e.current_contract_address(),
+            units,
+            evidence: BytesN::from_array(&e, &[7; 32]),
+            timestamp: e.ledger().timestamp(),
+        };
+        e.storage().instance().set(&MockKey::Attested(batch_id), &record);
+    }
+
+    pub fn attestation(e: Env, batch_id: u32) -> Option<Attestation> {
+        e.storage().instance().get(&MockKey::Attested(batch_id))
+    }
 }
 
 struct Setup<'a> {
@@ -59,6 +74,7 @@ struct Setup<'a> {
     share_token: Address,
     issuer: Address,
     pauser: Address,
+    inspector: Address,
     producer: Address,
     treasury: Address,
     buyer: Address,
@@ -101,6 +117,13 @@ fn setup<'a>() -> Setup<'a> {
     // Buyer starts with 1000 USDC.
     token::StellarAssetClient::new(&env, &usdc).mint(&buyer, &(1_000 * USDC));
 
+    // An inspector has visited batches 14 and 15: 100 units each.
+    let inspector = Address::generate(&env);
+    shares.grant_role(&inspector, &Symbol::new(&env, "inspector"), &admin);
+    let mock = MockRegistryClient::new(&env, &registry);
+    mock.attest(&14, &100);
+    mock.attest(&15, &100);
+
     Setup {
         env,
         shares,
@@ -111,6 +134,7 @@ fn setup<'a>() -> Setup<'a> {
         share_token,
         issuer,
         pauser,
+        inspector,
         producer,
         treasury,
         buyer,
@@ -185,8 +209,11 @@ fn buy_pays_producer_and_mints_shares() {
 
     let paid = s.shares.buy(&14, &s.buyer, &5);
 
+    // 70% to the producer now, 30% held here.
     assert_eq!(paid, 60 * USDC);
-    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 60 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 42 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.shares_addr), 18 * USDC);
+    assert_eq!(s.shares.escrow(&14).unwrap().pool, 18 * USDC);
     assert_eq!(balance(&s.env, &s.usdc, &s.buyer), 940 * USDC);
     assert_eq!(balance(&s.env, &s.share_token, &s.buyer), 5);
     assert_eq!(s.shares.remaining(&14), 995);
@@ -302,6 +329,12 @@ fn redeem_burns_shares_charges_fee_and_claims() {
     let p = s.shares.get_position(&14, &s.buyer);
     assert_eq!(p.shares, 10);
     assert_eq!(p.fee_paid_until, now + 365 * DAY);
+
+    // 3.6 USDC held per share: 20 shares' worth moves to the claim.
+    let held = s.shares.claim_escrow(&1).unwrap();
+    assert_eq!(held.amount, 72 * USDC);
+    assert!(!held.settled);
+    assert_eq!(s.shares.escrow(&14).unwrap().pool, 36 * USDC);
 }
 
 #[test]
@@ -317,4 +350,212 @@ fn redeem_works_with_zero_fee_and_usdc_admin_unused() {
     assert_eq!(balance(&s.env, &s.usdc, &s.treasury), 0);
     // usdc_admin only exists to show who could mint more test USDC.
     assert_ne!(s.usdc_admin, s.buyer);
+}
+
+// ---------- attestation ----------
+
+#[test]
+#[should_panic(expected = "Error(Contract, #608)")]
+fn open_offering_without_attestation_panics() {
+    let s = setup();
+    let now = s.env.ledger().timestamp();
+    s.shares.open_offering(
+        &16, &s.share_token, &s.producer, &USDC, &10, &0, &1, &now, &now, &s.issuer,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #609)")]
+fn open_offering_beyond_attested_units_panics() {
+    let s = setup();
+    MockRegistryClient::new(&s.env, &s.registry).attest(&16, &5);
+    let now = s.env.ledger().timestamp();
+    // 60 shares at 10 a unit is 6 units; only 5 were attested.
+    s.shares.open_offering(
+        &16, &s.share_token, &s.producer, &USDC, &60, &0, &10, &now, &now, &s.issuer,
+    );
+}
+
+// ---------- escrow ----------
+
+/// Batch 14 with 10 shares bought: 84 USDC paid, 36 USDC held.
+fn bought_ten(s: &Setup) {
+    open_default(s);
+    s.shares.buy(&14, &s.buyer, &10);
+}
+
+fn mature(s: &Setup) {
+    s.shares.set_maturity(&14, &s.env.ledger().timestamp(), &s.issuer);
+}
+
+#[test]
+fn inspection_releases_its_part() {
+    let s = setup();
+    bought_ten(&s);
+    assert_eq!(s.shares.held_per_share_now(&14), 36 * USDC / 10);
+
+    let released = s.shares.confirm_inspection(&14, &s.inspector);
+
+    // 1.8 USDC a share for 10 shares.
+    assert_eq!(released, 18 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 102 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.shares_addr), 18 * USDC);
+    assert!(s.shares.escrow(&14).unwrap().inspected);
+    assert_eq!(s.shares.held_per_share_now(&14), 18 * USDC / 10);
+
+    // Later buyers already pay the inspection part to the producer.
+    s.shares.buy(&14, &s.buyer, &10);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), (102 + 102) * USDC);
+    assert_eq!(s.shares.escrow(&14).unwrap().pool, 36 * USDC);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #613)")]
+fn inspection_releases_once() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.confirm_inspection(&14, &s.inspector);
+    s.shares.confirm_inspection(&14, &s.inspector);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2000)")]
+fn producer_cannot_confirm_its_own_inspection() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.confirm_inspection(&14, &s.producer);
+}
+
+#[test]
+fn collection_pays_the_producer_in_full() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.confirm_inspection(&14, &s.inspector);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    assert_eq!(s.shares.claim_escrow(&claim_id).unwrap().amount, 18 * USDC);
+
+    let released = s.shares.confirm_collection(&claim_id, &s.buyer);
+
+    assert_eq!(released, 18 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 120 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.shares_addr), 0);
+    assert!(s.shares.claim_escrow(&claim_id).unwrap().settled);
+}
+
+#[test]
+fn collection_without_inspection_releases_both_parts() {
+    let s = setup();
+    bought_ten(&s);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    assert_eq!(s.shares.claim_escrow(&claim_id).unwrap().amount, 36 * USDC);
+    // An inspector who witnessed the handover may confirm it too.
+    s.shares.confirm_collection(&claim_id, &s.inspector);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 120 * USDC);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #616)")]
+fn producer_cannot_confirm_collection() {
+    let s = setup();
+    bought_ten(&s);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    s.shares.confirm_collection(&claim_id, &s.producer);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #615)")]
+fn collection_is_confirmed_once() {
+    let s = setup();
+    bought_ten(&s);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    s.shares.confirm_collection(&claim_id, &s.buyer);
+    s.shares.confirm_collection(&claim_id, &s.buyer);
+}
+
+#[test]
+fn default_refunds_what_is_held() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.declare_default(&14, &s.inspector);
+    assert!(!s.shares.offering(&14).open);
+
+    let back = s.shares.refund(&14, &s.buyer, &10);
+
+    // The 30% still held comes back; the shares are burned.
+    assert_eq!(back, 36 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.buyer), (1_000 - 120 + 36) * USDC);
+    assert_eq!(balance(&s.env, &s.share_token, &s.buyer), 0);
+    assert_eq!(balance(&s.env, &s.usdc, &s.shares_addr), 0);
+    assert_eq!(s.shares.escrow(&14).unwrap().refunded, 10);
+}
+
+#[test]
+fn default_after_inspection_refunds_the_collection_part() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.confirm_inspection(&14, &s.inspector);
+    s.shares.declare_default(&14, &s.inspector);
+    assert_eq!(s.shares.refund(&14, &s.buyer, &10), 18 * USDC);
+}
+
+#[test]
+fn default_refunds_an_uncollected_claim() {
+    let s = setup();
+    bought_ten(&s);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    s.shares.declare_default(&14, &s.inspector);
+    let before = balance(&s.env, &s.usdc, &s.buyer);
+    assert_eq!(s.shares.refund_claim(&claim_id), 36 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.buyer), before + 36 * USDC);
+    assert!(s.shares.claim_escrow(&claim_id).unwrap().settled);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #612)")]
+fn refund_before_default_panics() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.refund(&14, &s.buyer, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #611)")]
+fn redeem_after_default_panics() {
+    let s = setup();
+    bought_ten(&s);
+    mature(&s);
+    s.shares.declare_default(&14, &s.inspector);
+    s.shares.redeem(&14, &s.buyer, &10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2000)")]
+fn producer_cannot_declare_default() {
+    let s = setup();
+    bought_ten(&s);
+    s.shares.declare_default(&14, &s.producer);
+}
+
+#[test]
+fn offering_from_before_escrow_still_pays_in_full() {
+    let s = setup();
+    open_default(&s);
+    // What an offering opened by the previous contract version looks like.
+    s.env.as_contract(&s.shares_addr, || {
+        s.env.storage().persistent().remove(&DataKey::Escrow(14));
+    });
+    s.shares.buy(&14, &s.buyer, &5);
+    assert_eq!(balance(&s.env, &s.usdc, &s.producer), 60 * USDC);
+    assert_eq!(s.shares.held_per_share_now(&14), 0);
+
+    // Redeeming records a claim with nothing held for it.
+    s.shares.buy(&14, &s.buyer, &5);
+    mature(&s);
+    let claim_id = s.shares.redeem(&14, &s.buyer, &10);
+    assert_eq!(s.shares.claim_escrow(&claim_id), None);
 }

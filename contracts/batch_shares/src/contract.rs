@@ -9,9 +9,17 @@
 // the SAC admin; this contract mints shares on purchase and burns them on
 // redemption. Prices and fees are in the payment token (USDC, 7 decimals).
 //
+// Buyer protection: an offering only opens once an inspector has attested the
+// batch on the registry, and never for more units than attested. Each payment
+// is split: UPFRONT_BPS goes to the producer at once, the rest stays here.
+// INSPECTION_BPS is released when an inspector confirms the batch while it
+// ages; what is left is released per claim once the unit is collected. If the
+// inspector declares the batch failed, holders take back what is still held.
+//
 // Roles (stellar-access AccessControl):
-//   issuer - opens, prices and closes offerings
-//   pauser - emergency stop for buy and redeem
+//   issuer    - opens, prices and closes offerings
+//   pauser    - emergency stop for buy and redeem
+//   inspector - confirms inspections and collections, declares a failed batch
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
@@ -23,6 +31,11 @@ use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
 use stellar_macros::{only_admin, only_role, when_not_paused};
 
 const SECONDS_PER_DAY: u64 = 86_400;
+const BPS: i128 = 10_000;
+/// Share of each payment the producer receives at purchase.
+const UPFRONT_BPS: i128 = 7_000;
+/// Share released to the producer when an inspector confirms the batch.
+const INSPECTION_BPS: i128 = 1_500;
 
 // ################## CROSS-CONTRACT ##################
 
@@ -30,6 +43,17 @@ const SECONDS_PER_DAY: u64 = 86_400;
 #[contractclient(name = "RegistryClient")]
 pub trait BatchRegistryInterface {
     fn claim(e: Env, batch_id: u32, claimer: Address, units: u32, caller: Address) -> u32;
+    fn attestation(e: Env, batch_id: u32) -> Option<Attestation>;
+}
+
+/// Mirror of the registry's attestation record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Attestation {
+    pub inspector: Address,
+    pub units: u32,
+    pub evidence: BytesN<32>,
+    pub timestamp: u64,
 }
 
 // ################## STORAGE ##################
@@ -46,6 +70,11 @@ pub enum DataKey {
     Offering(u32),
     /// Position of a holder in a batch: shares bought here and fee checkpoint.
     Position(u32, Address),
+    /// Buyer money held for a batch. Absent for offerings opened before
+    /// escrow existed, which paid the producer in full.
+    Escrow(u32),
+    /// Money held for one claim until its units are collected.
+    ClaimEscrow(u32),
 }
 
 /// Sale terms and state of one batch.
@@ -85,6 +114,33 @@ pub struct Position {
     pub fee_paid_until: u64,
 }
 
+/// Escrow terms and state of one batch.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Escrow {
+    /// Share of the price paid to the producer at purchase, in bps.
+    pub upfront_bps: i128,
+    /// Share of the price released when an inspector confirms the batch.
+    pub inspection_bps: i128,
+    pub inspected: bool,
+    /// Declared failed by an inspector: sales and redemption stop, refunds open.
+    pub defaulted: bool,
+    /// Held for shares still in circulation. Claims hold their own amount.
+    pub pool: i128,
+    /// Shares handed back for a refund after a default.
+    pub refunded: i128,
+}
+
+/// Money held for one claim, released to the producer on collection.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimEscrow {
+    pub batch_id: u32,
+    pub holder: Address,
+    pub amount: i128,
+    pub settled: bool,
+}
+
 // ################## ERRORS ##################
 
 #[contracterror]
@@ -100,6 +156,21 @@ pub enum BatchSharesError {
     /// Redemption amount is not a whole number of units.
     NotWholeUnits = 606,
     InvalidTerms = 607,
+    /// No inspector has attested this batch on the registry.
+    NotAttested = 608,
+    /// More shares than the attested units can back.
+    ExceedsAttested = 609,
+    /// The offering predates escrow.
+    NoEscrow = 610,
+    /// The batch was declared failed.
+    Defaulted = 611,
+    /// Refunds need the batch to be declared failed first.
+    NotDefaulted = 612,
+    AlreadyInspected = 613,
+    ClaimNotFound = 614,
+    AlreadySettled = 615,
+    /// Only the claim's holder or an inspector may confirm or refund it.
+    NotClaimant = 616,
 }
 
 // ################## EVENTS ##################
@@ -144,6 +215,35 @@ pub struct SharesRedeemed {
 pub struct OfferingClosed {
     #[topic]
     pub batch_id: u32,
+}
+
+/// Held money paid out to the producer: `reason` is `inspected` or `collected`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowReleased {
+    #[topic]
+    pub batch_id: u32,
+    pub reason: Symbol,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchDefaulted {
+    #[topic]
+    pub batch_id: u32,
+    pub inspector: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refunded {
+    #[topic]
+    pub batch_id: u32,
+    #[topic]
+    pub holder: Address,
+    pub shares: i128,
+    pub amount: i128,
 }
 
 
@@ -193,7 +293,9 @@ impl BatchShares {
     // ---------- admin ----------
 
     /// Open the primary sale of a batch. `share_token` is the SAC of the
-    /// batch's share asset and this contract must already be its admin.
+    /// batch's share asset and this contract must already be its admin. The
+    /// batch must be attested on the registry, and `total_shares` may not
+    /// exceed the attested units.
     #[only_role(caller, "issuer")]
     #[allow(clippy::too_many_arguments)]
     pub fn open_offering(
@@ -220,6 +322,21 @@ impl BatchShares {
         {
             panic_with_error!(e, BatchSharesError::InvalidTerms);
         }
+        let attested = RegistryClient::new(e, &Self::registry(e))
+            .attestation(&batch_id)
+            .unwrap_or_else(|| panic_with_error!(e, BatchSharesError::NotAttested));
+        if total_shares > attested.units as i128 * shares_per_unit {
+            panic_with_error!(e, BatchSharesError::ExceedsAttested);
+        }
+        let escrow = Escrow {
+            upfront_bps: UPFRONT_BPS,
+            inspection_bps: INSPECTION_BPS,
+            inspected: false,
+            defaulted: false,
+            pool: 0,
+            refunded: 0,
+        };
+        Self::save_escrow(e, batch_id, &escrow);
         let offering = Offering {
             batch_id,
             share_token: share_token.clone(),
@@ -266,8 +383,9 @@ impl BatchShares {
 
     // ---------- buyers ----------
 
-    /// Buy `shares` of a batch. The buyer pays `price * shares` in the payment
-    /// token straight to the producer and receives freshly minted shares.
+    /// Buy `shares` of a batch for `price * shares` in the payment token. The
+    /// producer gets the upfront part at once and this contract holds the
+    /// rest; the buyer receives freshly minted shares.
     #[when_not_paused]
     pub fn buy(e: &Env, batch_id: u32, buyer: Address, shares: i128) -> i128 {
         buyer.require_auth();
@@ -283,7 +401,24 @@ impl BatchShares {
         }
 
         let paid = offering.price * shares;
-        token::Client::new(e, &Self::payment_token(e)).transfer(&buyer, &offering.producer, &paid);
+        let payment = token::Client::new(e, &Self::payment_token(e));
+        let held = match Self::load_escrow(e, batch_id) {
+            Some(mut escrow) => {
+                if escrow.defaulted {
+                    panic_with_error!(e, BatchSharesError::Defaulted);
+                }
+                let held = Self::held_per_share(&offering, &escrow) * shares;
+                escrow.pool += held;
+                Self::save_escrow(e, batch_id, &escrow);
+                held
+            }
+            None => 0,
+        };
+        payment.transfer(&buyer, &offering.producer, &(paid - held));
+        if held > 0 {
+            let this = e.current_contract_address();
+            payment.transfer(&buyer, &this, &held);
+        }
         token::StellarAssetClient::new(e, &offering.share_token).mint(&buyer, &shares);
 
         offering.sold += shares;
@@ -311,7 +446,9 @@ impl BatchShares {
 
     /// Redeem `shares` for units once the batch is mature. The holder gives
     /// back the shares, pays the accrued storage fee to the treasury, and a
-    /// claim is recorded on the registry. Returns the claim id.
+    /// claim is recorded on the registry. The money still held for these
+    /// shares moves to the claim until the units are collected. Returns the
+    /// claim id.
     #[when_not_paused]
     pub fn redeem(e: &Env, batch_id: u32, holder: Address, shares: i128) -> u32 {
         holder.require_auth();
@@ -319,6 +456,10 @@ impl BatchShares {
             panic_with_error!(e, BatchSharesError::InvalidAmount);
         }
         let mut offering = Self::load(e, batch_id);
+        let mut escrow = Self::load_escrow(e, batch_id);
+        if escrow.as_ref().is_some_and(|esc| esc.defaulted) {
+            panic_with_error!(e, BatchSharesError::Defaulted);
+        }
         let now = e.ledger().timestamp();
         if now < offering.matures_at {
             panic_with_error!(e, BatchSharesError::NotMature);
@@ -355,8 +496,161 @@ impl BatchShares {
         let claim_id =
             RegistryClient::new(e, &Self::registry(e)).claim(&batch_id, &holder, &units, &this);
 
+        if let Some(esc) = escrow.as_mut() {
+            let amount = Self::held_per_share(&offering, esc) * shares;
+            esc.pool -= amount;
+            Self::save_escrow(e, batch_id, esc);
+            let record = ClaimEscrow { batch_id, holder: holder.clone(), amount, settled: false };
+            e.storage().persistent().set(&DataKey::ClaimEscrow(claim_id), &record);
+            keep_key(e, &DataKey::ClaimEscrow(claim_id));
+        }
+
         SharesRedeemed { batch_id, holder, shares, units, fee, claim_id }.publish(e);
         claim_id
+    }
+
+    // ---------- escrow ----------
+
+    /// An inspector confirms the batch is in the cellar and in good order
+    /// while it ages: the inspection part of every circulating share goes to
+    /// the producer. Once per batch.
+    #[only_role(caller, "inspector")]
+    #[when_not_paused]
+    pub fn confirm_inspection(e: &Env, batch_id: u32, caller: Address) -> i128 {
+        let offering = Self::load(e, batch_id);
+        let mut escrow = Self::escrow_or_panic(e, batch_id);
+        if escrow.defaulted {
+            panic_with_error!(e, BatchSharesError::Defaulted);
+        }
+        if escrow.inspected {
+            panic_with_error!(e, BatchSharesError::AlreadyInspected);
+        }
+        let circulating = offering.sold - offering.redeemed - escrow.refunded;
+        let amount = offering.price * escrow.inspection_bps / BPS * circulating;
+        escrow.pool -= amount;
+        escrow.inspected = true;
+        Self::save_escrow(e, batch_id, &escrow);
+        if amount > 0 {
+            token::Client::new(e, &Self::payment_token(e)).transfer(
+                &e.current_contract_address(),
+                &offering.producer,
+                &amount,
+            );
+        }
+        EscrowReleased { batch_id, reason: Symbol::new(e, "inspected"), amount }.publish(e);
+        amount
+    }
+
+    /// The units of a claim were handed over: release what was held for them
+    /// to the producer. Confirmed by the holder, or by an inspector who
+    /// witnessed the collection.
+    #[when_not_paused]
+    pub fn confirm_collection(e: &Env, claim_id: u32, caller: Address) -> i128 {
+        caller.require_auth();
+        let mut record = Self::claim_escrow_or_panic(e, claim_id);
+        if record.settled {
+            panic_with_error!(e, BatchSharesError::AlreadySettled);
+        }
+        if caller != record.holder
+            && access_control::has_role(e, &caller, &Symbol::new(e, "inspector")).is_none()
+        {
+            panic_with_error!(e, BatchSharesError::NotClaimant);
+        }
+        let offering = Self::load(e, record.batch_id);
+        record.settled = true;
+        e.storage().persistent().set(&DataKey::ClaimEscrow(claim_id), &record);
+        keep_key(e, &DataKey::ClaimEscrow(claim_id));
+        if record.amount > 0 {
+            token::Client::new(e, &Self::payment_token(e)).transfer(
+                &e.current_contract_address(),
+                &offering.producer,
+                &record.amount,
+            );
+        }
+        EscrowReleased {
+            batch_id: record.batch_id,
+            reason: Symbol::new(e, "collected"),
+            amount: record.amount,
+        }
+        .publish(e);
+        record.amount
+    }
+
+    /// An inspector finds the batch missing, swapped or spoiled. Sales and
+    /// redemption stop and holders can take back the money still held.
+    #[only_role(caller, "inspector")]
+    pub fn declare_default(e: &Env, batch_id: u32, caller: Address) {
+        let mut offering = Self::load(e, batch_id);
+        let mut escrow = Self::escrow_or_panic(e, batch_id);
+        escrow.defaulted = true;
+        Self::save_escrow(e, batch_id, &escrow);
+        offering.open = false;
+        e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
+        BatchDefaulted { batch_id, inspector: caller }.publish(e);
+    }
+
+    /// After a default, hand back `shares` (burned) for the money still held
+    /// for them. Works for shares bought anywhere, including the DEX.
+    #[when_not_paused]
+    pub fn refund(e: &Env, batch_id: u32, holder: Address, shares: i128) -> i128 {
+        holder.require_auth();
+        if shares <= 0 {
+            panic_with_error!(e, BatchSharesError::InvalidAmount);
+        }
+        let offering = Self::load(e, batch_id);
+        let mut escrow = Self::escrow_or_panic(e, batch_id);
+        if !escrow.defaulted {
+            panic_with_error!(e, BatchSharesError::NotDefaulted);
+        }
+        let share_client = token::Client::new(e, &offering.share_token);
+        let this = e.current_contract_address();
+        share_client.transfer(&holder, &this, &shares);
+        share_client.burn(&this, &shares);
+
+        let owed = Self::held_per_share(&offering, &escrow) * shares;
+        let amount = if owed > escrow.pool { escrow.pool } else { owed };
+        escrow.pool -= amount;
+        escrow.refunded += shares;
+        Self::save_escrow(e, batch_id, &escrow);
+        if amount > 0 {
+            token::Client::new(e, &Self::payment_token(e)).transfer(&this, &holder, &amount);
+        }
+        Refunded { batch_id, holder, shares, amount }.publish(e);
+        amount
+    }
+
+    /// After a default, the holder of an uncollected claim takes back what
+    /// was held for it.
+    #[when_not_paused]
+    pub fn refund_claim(e: &Env, claim_id: u32) -> i128 {
+        let mut record = Self::claim_escrow_or_panic(e, claim_id);
+        record.holder.require_auth();
+        if record.settled {
+            panic_with_error!(e, BatchSharesError::AlreadySettled);
+        }
+        let escrow = Self::escrow_or_panic(e, record.batch_id);
+        if !escrow.defaulted {
+            panic_with_error!(e, BatchSharesError::NotDefaulted);
+        }
+        record.settled = true;
+        e.storage().persistent().set(&DataKey::ClaimEscrow(claim_id), &record);
+        keep_key(e, &DataKey::ClaimEscrow(claim_id));
+        if record.amount > 0 {
+            token::Client::new(e, &Self::payment_token(e)).transfer(
+                &e.current_contract_address(),
+                &record.holder,
+                &record.amount,
+            );
+        }
+        Refunded {
+            batch_id: record.batch_id,
+            holder: record.holder,
+            shares: 0,
+            amount: record.amount,
+        }
+        .publish(e);
+        record.amount
     }
 
     // ---------- views ----------
@@ -387,6 +681,26 @@ impl BatchShares {
         Self::fee_for(e, &offering, batch_id, &holder, shares, e.ledger().timestamp())
     }
 
+    /// Escrow of a batch; `None` for offerings opened before escrow existed.
+    pub fn escrow(e: &Env, batch_id: u32) -> Option<Escrow> {
+        Self::load_escrow(e, batch_id)
+    }
+
+    /// Payment held per circulating share right now: what a holder gets back
+    /// per share if the batch fails.
+    pub fn held_per_share_now(e: &Env, batch_id: u32) -> i128 {
+        let offering = Self::load(e, batch_id);
+        match Self::load_escrow(e, batch_id) {
+            Some(escrow) => Self::held_per_share(&offering, &escrow),
+            None => 0,
+        }
+    }
+
+    /// Money held for a claim until its units are collected.
+    pub fn claim_escrow(e: &Env, claim_id: u32) -> Option<ClaimEscrow> {
+        e.storage().persistent().get(&DataKey::ClaimEscrow(claim_id))
+    }
+
     pub fn payment_token(e: &Env) -> Address {
         e.storage().instance().get(&DataKey::PaymentToken).expect("payment token set")
     }
@@ -406,6 +720,41 @@ impl BatchShares {
             .persistent()
             .get(&DataKey::Offering(batch_id))
             .unwrap_or_else(|| panic_with_error!(e, BatchSharesError::OfferingNotFound))
+    }
+
+    fn load_escrow(e: &Env, batch_id: u32) -> Option<Escrow> {
+        e.storage().persistent().get(&DataKey::Escrow(batch_id))
+    }
+
+    fn escrow_or_panic(e: &Env, batch_id: u32) -> Escrow {
+        Self::load_escrow(e, batch_id)
+            .unwrap_or_else(|| panic_with_error!(e, BatchSharesError::NoEscrow))
+    }
+
+    fn save_escrow(e: &Env, batch_id: u32, escrow: &Escrow) {
+        e.storage().persistent().set(&DataKey::Escrow(batch_id), escrow);
+        keep_key(e, &DataKey::Escrow(batch_id));
+    }
+
+    fn claim_escrow_or_panic(e: &Env, claim_id: u32) -> ClaimEscrow {
+        e.storage()
+            .persistent()
+            .get(&DataKey::ClaimEscrow(claim_id))
+            .unwrap_or_else(|| panic_with_error!(e, BatchSharesError::ClaimNotFound))
+    }
+
+    /// Part of one share's price not yet paid to the producer: the inspection
+    /// part until an inspector confirms the batch, plus the collection part.
+    /// The upfront part is rounded down, the collection part takes the rest.
+    fn held_per_share(offering: &Offering, escrow: &Escrow) -> i128 {
+        let upfront = offering.price * escrow.upfront_bps / BPS;
+        let inspection = offering.price * escrow.inspection_bps / BPS;
+        let collection = offering.price - upfront - inspection;
+        if escrow.inspected {
+            collection
+        } else {
+            inspection + collection
+        }
     }
 
     fn position(e: &Env, batch_id: u32, holder: &Address) -> Position {

@@ -6,7 +6,12 @@
  *     roles (minter, curator, issuer) and a classic account to issue the share
  *     asset. Performs the steps scripts/open-batch.sh does by hand, then names
  *     the producer on the registry and the oracle so the producer's own
- *     account can link an NFC tag and post check-ins.
+ *     account can link an NFC tag and post check-ins. The sale itself waits
+ *     for an inspector.
+ *   - inspections (/api/inspections): the inspector attests a batch, which
+ *     opens its sale for at most the units seen; records visits that release
+ *     the inspection part of the escrow; or declares a batch failed, which
+ *     opens refunds.
  *   - keeps producer profiles (name, story, logo) and certification
  *     applications in deploy/producers.json; an admin approves an application
  *     and the producer's rating goes on chain.
@@ -20,7 +25,9 @@
  * Env:
  *   ADMIN_KEY       Stellar CLI identity name holding the roles (default fermento-admin)
  *   ADMIN_SECRET    S... secret, used instead of the CLI identity when set
- *   ADMIN_TOKEN     shared secret for certification review; unset = localhost only
+ *   ADMIN_TOKEN     shared secret for certification and inspection; unset = localhost only
+ *   INSPECTOR_SECRET  S... secret of the inspector (holds the `inspector` role
+ *                   on all three contracts); the admin key when unset
  *   KEEPER_MINUTES  oracle keeper period, 0 disables (default 10)
  *   PORT            default 8787
  *
@@ -89,19 +96,31 @@ const adminSecret =
     .toString()
     .trim();
 const admin = Keypair.fromSecret(adminSecret);
-const signer = contract.basicNodeSigner(admin, PASSPHRASE);
+/**
+ * Independent inspector: attests batches, confirms visits, declares failures.
+ * INSPECTOR_SECRET should belong to someone other than the platform; the
+ * admin key stands in when it is unset (testnet demo).
+ */
+const inspector = process.env.INSPECTOR_SECRET
+  ? Keypair.fromSecret(process.env.INSPECTOR_SECRET)
+  : admin;
 const server = new rpc.Server(RPC_URL);
 
-const clientOptions = (contractId: string) => ({
+const clientOptions = (contractId: string, as: Keypair = admin) => ({
   contractId,
   rpcUrl: RPC_URL,
   networkPassphrase: PASSPHRASE,
-  publicKey: admin.publicKey(),
-  ...signer,
+  publicKey: as.publicKey(),
+  ...contract.basicNodeSigner(as, PASSPHRASE),
 });
 const registry = new RegistryClient(clientOptions(deployed.REGISTRY_ID));
 const shares = new SharesClient(clientOptions(deployed.SHARES_ID));
 const oracle = new OracleClient(clientOptions(deployed.ORACLE_ID));
+const asInspector = {
+  registry: new RegistryClient(clientOptions(deployed.REGISTRY_ID, inspector)),
+  shares: new SharesClient(clientOptions(deployed.SHARES_ID, inspector)),
+  oracle: new OracleClient(clientOptions(deployed.ORACLE_ID, inspector)),
+};
 
 /* ---------------------------------- Stores --------------------------------- */
 
@@ -142,6 +161,19 @@ interface StoredBatch {
   confidentialToken?: string;
   /** Locked issuer of the share asset (master weight 0). */
   shareIssuer?: string;
+  /**
+   * Sale terms asked for at listing. The offering opens only once an
+   * inspector attests the batch, for at most the units attested.
+   */
+  saleTerms?: {
+    units: number;
+    /** Price per unit in USDC base units, as a decimal string. */
+    price: string;
+    filledAt: string;
+    maturesAt: string;
+  };
+  /** Set when the offering is open on chain. */
+  saleOpenedAt?: string;
   sensorPublic: string;
   /** Kept server side only. */
   sensorSecret: string;
@@ -193,7 +225,10 @@ const writeJson = (file: URL, rows: unknown) =>
 
 const loadStore = () => readJson<StoredBatch[]>(STORE_FILE, []);
 const saveStore = (rows: StoredBatch[]) => writeJson(STORE_FILE, rows);
-const publicBatch = ({ sensorSecret: _s, ...rest }: StoredBatch) => rest;
+const publicBatch = ({ sensorSecret: _s, ...rest }: StoredBatch) => ({
+  ...rest,
+  saleStatus: saleStatus(rest as StoredBatch),
+});
 
 const loadProducers = () => readJson<Producer[]>(PRODUCERS_FILE, []);
 const saveProducers = (rows: Producer[]) => writeJson(PRODUCERS_FILE, rows);
@@ -657,23 +692,7 @@ const listBatch = async (req: ListingRequest, origin: string) => {
     shareIssuer = issued.issuer;
     txs.shareAsset = shareToken;
 
-    // 6. primary offering
-    const offered = await exists(() => shares.offering({ batch_id: batchId }));
-    if (!offered)
-      txs.offering = await send(
-        await shares.open_offering({
-          batch_id: batchId,
-          share_token: shareToken,
-          producer: producerAddress,
-          price,
-          total_shares: BigInt(req.shares),
-          fee_per_share_day: FEE_PER_SHARE_DAY,
-          shares_per_unit: 1n,
-          filled_at: filledAt,
-          matures_at: maturesAt,
-          caller,
-        }),
-      );
+    // 6. The offering waits for an inspector's attestation (openSale).
 
     // 7. confidential wrapper, so holders can keep their shares private
     if (confidentialReady()) {
@@ -716,6 +735,14 @@ const listBatch = async (req: ListingRequest, origin: string) => {
     shareToken,
     confidentialToken,
     shareIssuer,
+    saleTerms: onSale
+      ? {
+          units: req.shares,
+          price: price.toString(),
+          filledAt: filledAt.toString(),
+          maturesAt: maturesAt.toString(),
+        }
+      : undefined,
     sensorPublic: sensor.publicKey(),
     sensorSecret: sensor.secret(),
     listedAt: new Date().toISOString(),
@@ -723,6 +750,194 @@ const listBatch = async (req: ListingRequest, origin: string) => {
   };
   saveStore([...store, row]);
   return row;
+};
+
+/* ------------------------------- Inspections ------------------------------- */
+//
+// An independent inspector vouches for each batch before any of it is sold,
+// and visits it while it ages. Every action is a contract call signed with the
+// inspector's own key, so the chain shows who vouched for what. The written
+// report stays off chain; its sha256 is recorded as the evidence.
+
+const MAX_NOTE_BYTES = 280;
+
+const saveRow = (row: StoredBatch) =>
+  saveStore(loadStore().map((b) => (b.batchId === row.batchId ? row : b)));
+
+/** sha256 of an inspection report, its fingerprint on chain. */
+const fingerprint = (report: string) =>
+  createHash("sha256").update(report).digest();
+
+/** Listed batches only, or ones opened with scripts/open-batch.sh. */
+const assertKnown = (batchId: number) => {
+  if (!knownBatchIds().includes(batchId)) throw new Error("batch not found");
+};
+
+const assertNote = (note: string) => {
+  if (Buffer.byteLength(note) > MAX_NOTE_BYTES)
+    throw new Error(`note is longer than ${MAX_NOTE_BYTES} bytes`);
+};
+
+/**
+ * The inspector has seen the batch: record how many units it holds, then open
+ * its sale for at most that many. Re-attesting (e.g. after regauging) only
+ * updates the record.
+ */
+const attestBatch = async (batchId: number, units: number, report: string) => {
+  assertKnown(batchId);
+  if (!Number.isInteger(units) || units <= 0)
+    throw new Error("units must be a positive whole number");
+  if (!report.trim()) throw new Error("report is required");
+  const result: Record<string, string> = {};
+  result.attest = await send(
+    await asInspector.registry.attest({
+      batch_id: batchId,
+      units,
+      evidence: fingerprint(report),
+      caller: inspector.publicKey(),
+    }),
+  );
+
+  const row = loadStore().find((b) => b.batchId === batchId);
+  const terms = row?.saleTerms;
+  const offered = await exists(() => shares.offering({ batch_id: batchId }));
+  if (row?.onSale && row.shareToken && terms && !offered) {
+    result.offering = await send(
+      await shares.open_offering({
+        batch_id: batchId,
+        share_token: row.shareToken,
+        producer: row.producerAddress,
+        price: BigInt(terms.price),
+        total_shares: BigInt(Math.min(terms.units, units)),
+        fee_per_share_day: FEE_PER_SHARE_DAY,
+        shares_per_unit: 1n,
+        filled_at: BigInt(terms.filledAt),
+        matures_at: BigInt(terms.maturesAt),
+        caller: admin.publicKey(),
+      }),
+    );
+  }
+  if (row) {
+    saveRow({
+      ...row,
+      txs: { ...row.txs, ...result },
+      saleOpenedAt:
+        row.saleOpenedAt ??
+        (result.offering ? new Date().toISOString() : undefined),
+    });
+  }
+  return result;
+};
+
+/**
+ * A visit while the batch ages: the inspector's score feeds the care bonus.
+ * With `release`, the visit also confirms the batch is in good order, which
+ * pays the producer the inspection part of the escrow (once per batch).
+ */
+const recordVisit = async (
+  batchId: number,
+  score: number,
+  note: string,
+  release: boolean,
+) => {
+  assertKnown(batchId);
+  if (!Number.isInteger(score) || score < 0 || score > 100)
+    throw new Error("score must be 0 to 100");
+  assertNote(note);
+  const result: Record<string, string> = {};
+  result.visit = await send(
+    await asInspector.oracle.post_inspection({
+      batch_id: batchId,
+      kind: "visit",
+      note,
+      score,
+      caller: inspector.publicKey(),
+    }),
+  );
+  if (release) {
+    const escrow = await read(() => shares.escrow({ batch_id: batchId }));
+    if (escrow && !escrow.inspected && !escrow.defaulted)
+      result.release = await send(
+        await asInspector.shares.confirm_inspection({
+          batch_id: batchId,
+          caller: inspector.publicKey(),
+        }),
+      );
+  }
+  return result;
+};
+
+/**
+ * The batch is missing, swapped or spoiled: record why on the batch's
+ * timeline, stop its sale and open refunds of the money still held.
+ */
+const declareDefault = async (batchId: number, note: string) => {
+  assertKnown(batchId);
+  if (!note.trim()) throw new Error("note is required");
+  assertNote(note);
+  const result: Record<string, string> = {};
+  result.visit = await send(
+    await asInspector.oracle.post_inspection({
+      batch_id: batchId,
+      kind: "failed",
+      note,
+      score: 0,
+      caller: inspector.publicKey(),
+    }),
+  );
+  result.default = await send(
+    await asInspector.shares.declare_default({
+      batch_id: batchId,
+      caller: inspector.publicKey(),
+    }),
+  );
+  return result;
+};
+
+/** Every batch with what the inspector needs to act on it. */
+const inspectionQueue = async () => {
+  const rows = loadStore();
+  return Promise.all(
+    knownBatchIds().map(async (batchId) => {
+      const row = rows.find((b) => b.batchId === batchId);
+      const [attestation, escrow, offering] = await Promise.all([
+        read(() => registry.attestation({ batch_id: batchId })),
+        read(() => shares.escrow({ batch_id: batchId })),
+        read(() => shares.offering({ batch_id: batchId })),
+      ]);
+      return {
+        batchId,
+        name: row?.name ?? `Batch Nº ${batchId}`,
+        producer: row?.producer,
+        unit: row?.unit ?? "unit",
+        status: saleStatus(row),
+        requestedUnits: row?.saleTerms?.units,
+        attestation: attestation
+          ? {
+              units: attestation.units,
+              inspector: attestation.inspector,
+              at: new Date(Number(attestation.timestamp) * 1000).toISOString(),
+            }
+          : undefined,
+        escrow: escrow
+          ? {
+              inspected: escrow.inspected,
+              defaulted: escrow.defaulted,
+              held: escrow.pool.toString(),
+            }
+          : undefined,
+        sold: offering ? Number(offering.sold) : undefined,
+      };
+    }),
+  );
+};
+
+/** Where a batch's sale stands, for the app. */
+const saleStatus = (row?: StoredBatch) => {
+  if (row && !row.onSale) return "tracking";
+  // Rows listed before inspections existed opened their sale at listing.
+  if (!row?.saleTerms || row.saleOpenedAt) return "open";
+  return "awaiting-inspection";
 };
 
 /* ------------------------------ Certification ------------------------------ */
@@ -839,7 +1054,11 @@ const reviewCertification = async (
 
 const BPS = 10_000;
 const RATING_CERTIFIED = 600;
-const RATING_TRACTION_MAX = 600;
+/** Kept small: a producer can buy its own units to fake traction. */
+const RATING_TRACTION_MAX = 300;
+/** The oracle refuses ratings outside 0.8x to 1.2x. */
+const RATING_MIN = 8_000;
+const RATING_MAX = 12_000;
 const RATING_PER_EXTRA_BATCH = 100;
 const RATING_TRACK_RECORD_MAX = 300;
 
@@ -891,7 +1110,7 @@ const computeRating = async (address: string) => {
     RATING_TRACK_RECORD_MAX,
     Math.max(0, mine.length - 1) * RATING_PER_EXTRA_BATCH,
   );
-  return rating;
+  return Math.min(RATING_MAX, Math.max(RATING_MIN, rating));
 };
 
 /** Post the rating when it differs from what the chain holds. */
@@ -1237,6 +1456,45 @@ createServer(async (req, res) => {
       const p = await reviewCertification(seg[2], seg[3], note);
       console.log(`certification ${seg[2]} ${seg[3]}d for ${p.address}`);
       return json(res, 200, publicProducer(p));
+    }
+
+    // ---- inspections ----
+    if (req.method === "GET" && path === "/api/inspections") {
+      if (!isAdmin(req)) return json(res, 403, { error: "admin only" });
+      return json(res, 200, {
+        inspector: inspector.publicKey(),
+        independent: inspector.publicKey() !== admin.publicKey(),
+        batches: await inspectionQueue(),
+      });
+    }
+    if (
+      req.method === "POST" &&
+      seg[1] === "inspections" &&
+      seg.length === 4 &&
+      ["attest", "visit", "default"].includes(seg[3])
+    ) {
+      if (!isAdmin(req)) return json(res, 403, { error: "admin only" });
+      const batchId = Number(seg[2]);
+      const body = JSON.parse((await readBody(req)) || "{}") as {
+        units?: number;
+        report?: string;
+        score?: number;
+        note?: string;
+        release?: boolean;
+      };
+      const result =
+        seg[3] === "attest"
+          ? await attestBatch(batchId, Number(body.units), body.report ?? "")
+          : seg[3] === "visit"
+            ? await recordVisit(
+                batchId,
+                Number(body.score),
+                body.note ?? "",
+                !!body.release,
+              )
+            : await declareDefault(batchId, body.note ?? "");
+      console.log(`inspection ${seg[3]} on batch ${batchId}`, result);
+      return json(res, 200, result);
     }
 
     // ---- oracle ----
