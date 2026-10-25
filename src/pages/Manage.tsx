@@ -1,5 +1,5 @@
 import React from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import Checkins from "../components/Checkins";
 import { CHECKIN_KINDS } from "../lib/checkins";
 import FermentIcon from "../components/FermentIcons";
@@ -532,7 +532,11 @@ const Manage: React.FC = () => {
   const info = catalogue.find((b) => b.batchId === Number(id));
   const chain = useBatchChain(info?.batchId);
   const { producer } = useProducer(info?.producerAddress ?? info?.producerSlug);
-  const [sheet, setSheet] = React.useState<"checkin" | "card" | null>(null);
+  const location = useLocation();
+  // Arriving from "Add a ferment" with the NFC option on opens the card sheet.
+  const [sheet, setSheet] = React.useState<"checkin" | "card" | null>(() =>
+    (location.state as { linkCard?: boolean } | null)?.linkCard ? "card" : null,
+  );
 
   const offering = chain.offering;
   const fillPrice = offering?.price;
