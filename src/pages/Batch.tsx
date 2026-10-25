@@ -8,6 +8,7 @@ import { useAccount } from "../hooks/useAccount";
 import { useBalance } from "../hooks/useBalance";
 import { useBatchChain } from "../hooks/useBatchChain";
 import { SHARES_ID, USDC_ID, getShares } from "../contracts/client";
+import { recordActivity } from "../lib/activity";
 import { celsius, money, pctChange, progress, shortDate } from "../lib/format";
 import "./Batch.css";
 
@@ -415,6 +416,12 @@ const BuySheet: React.FC<{
         shares,
       });
       setHash(await account.submit(tx));
+      recordActivity(account.address, {
+        kind: "buy",
+        title: `${shares.toString()} shares · ${info.label}`,
+        batchId: info.batchId,
+        amount: -total,
+      });
       onBought();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

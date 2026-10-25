@@ -8,6 +8,7 @@ import { useAccount } from "../hooks/useAccount";
 import { useBatchesChain } from "../hooks/useBatchChain";
 import { readBalance } from "../wallet/balances";
 import { getKit } from "../wallet/kit";
+import { recordActivity } from "../lib/activity";
 import { money } from "../lib/format";
 
 /* ---------------------------------- Theme --------------------------------- */
@@ -72,6 +73,11 @@ const ActionSheet: React.FC<{
           shares,
         });
         setHash(await account.submit(tx));
+        recordActivity(account.address, {
+          kind: "redeem",
+          title: `Redeemed ${(shares / perUnit).toString()} ${holding.info.unit}${shares / perUnit === 1n ? "" : "s"} · ${holding.info.label}`,
+          batchId: holding.info.batchId,
+        });
       } else {
         const result = await getKit().transfer(
           holding.offering.share_token,
@@ -80,6 +86,11 @@ const ActionSheet: React.FC<{
         );
         if (!result.success) throw new Error(result.error.message);
         setHash(result.hash);
+        recordActivity(account.address, {
+          kind: "send",
+          title: `Sent ${shares.toString()} shares · ${holding.info.label}`,
+          batchId: holding.info.batchId,
+        });
       }
       onDone();
     } catch (err) {
@@ -102,7 +113,7 @@ const ActionSheet: React.FC<{
   };
 
   return (
-    <div style={{ position: "absolute", inset: 0, zIndex: 10 }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: 30 }}>
       <button
         type="button"
         aria-label="Close"
@@ -123,8 +134,11 @@ const ActionSheet: React.FC<{
         aria-modal="true"
         style={{
           position: "absolute",
-          left: 0,
-          right: 0,
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: "100%",
+          maxWidth: "var(--frame)",
+          boxSizing: "border-box",
           bottom: 0,
           background: CREAM,
           borderRadius: "32px 32px 0 0",
@@ -272,6 +286,7 @@ const Holdings: React.FC = () => {
   const [balances, setBalances] = React.useState<Record<number, bigint>>({});
   const [action, setAction] = React.useState<Action>(null);
   const [tick, setTick] = React.useState(0);
+  const [open, setOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (!account.address) return;
@@ -319,22 +334,66 @@ const Holdings: React.FC = () => {
         color: INK,
       }}
     >
-      <div
+      {/* Summary row; tap to show the batches with Send and Redeem */}
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
         style={{
           display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-          padding: "14px 0 6px",
-          borderTop: `1.5px solid ${RULE}`,
+          alignItems: "center",
+          gap: 14,
+          width: "100%",
+          padding: "16px 0",
+          border: 0,
+          borderBottom: `1.5px solid ${RULE}`,
+          background: "transparent",
+          fontFamily: SANS,
+          color: INK,
+          cursor: "pointer",
+          textAlign: "left",
         }}
       >
-        <span style={{ fontSize: 15, fontWeight: 700 }}>In your cellar</span>
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M7 3h10c1.6 3 1.6 15 0 18H7C5.4 18 5.4 6 7 3z" />
+          <path d="M5.9 8.5h12.2M5.9 15.5h12.2" />
+        </svg>
+        <span style={{ flex: 1, fontSize: 16, fontWeight: 800 }}>
+          In your cellar
+        </span>
         <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 15 }}>
           {money(total)}
         </span>
-      </div>
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          style={{
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform 150ms",
+          }}
+        >
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
 
-      {holdings.length === 0 && (
+      {open && holdings.length === 0 && (
         <p
           style={{
             margin: 0,
@@ -351,43 +410,49 @@ const Holdings: React.FC = () => {
         </p>
       )}
 
-      {holdings.map((h) => (
-        <div
-          key={h.info.batchId}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "12px 0",
-            borderBottom: `1.5px solid ${RULE}`,
-          }}
-        >
-          <Link
-            to={`/batch/${h.info.batchId}`}
-            style={{ flex: 1, minWidth: 0, textDecoration: "none", color: INK }}
+      {open &&
+        holdings.map((h) => (
+          <div
+            key={h.info.batchId}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "12px 0",
+              borderBottom: `1.5px solid ${RULE}`,
+            }}
           >
-            <div style={{ fontWeight: 800, fontSize: 15 }}>{h.info.name}</div>
-            <div style={{ fontSize: 12, color: INK_SOFT }}>
-              {h.shares.toString()} shares · {h.info.label} · {money(h.mark)}{" "}
-              each
-            </div>
-          </Link>
-          <button
-            type="button"
-            onClick={() => setAction({ kind: "send", holding: h })}
-            style={small(false)}
-          >
-            Send
-          </button>
-          <button
-            type="button"
-            onClick={() => setAction({ kind: "redeem", holding: h })}
-            style={small(true)}
-          >
-            Redeem
-          </button>
-        </div>
-      ))}
+            <Link
+              to={`/batch/${h.info.batchId}`}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                textDecoration: "none",
+                color: INK,
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{h.info.name}</div>
+              <div style={{ fontSize: 12, color: INK_SOFT }}>
+                {h.shares.toString()} shares · {h.info.label} · {money(h.mark)}{" "}
+                each
+              </div>
+            </Link>
+            <button
+              type="button"
+              onClick={() => setAction({ kind: "send", holding: h })}
+              style={small(false)}
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              onClick={() => setAction({ kind: "redeem", holding: h })}
+              style={small(true)}
+            >
+              Redeem
+            </button>
+          </div>
+        ))}
 
       {action && (
         <ActionSheet

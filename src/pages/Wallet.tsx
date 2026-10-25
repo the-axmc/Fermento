@@ -4,10 +4,15 @@ import Landscape from "../components/Landscape";
 import { useNavigate } from "react-router-dom";
 import Holdings from "../components/Holdings";
 import { USDC_ID } from "../contracts/client";
+import type { BatchInfo } from "../data/batches";
 import { useAccount } from "../hooks/useAccount";
+import { useActivity } from "../hooks/useActivity";
 import { useBalance } from "../hooks/useBalance";
+import { useCatalogue } from "../hooks/useCatalogue";
 import { requestFunds, useTreasury } from "../hooks/useTreasury";
-import { money, shortAddress } from "../lib/format";
+import { type Activity, recordActivity } from "../lib/activity";
+import { money, shortAddress, shortDate } from "../lib/format";
+import { APP_NAME, getKit } from "../wallet/kit";
 import "./Wallet.css";
 
 /* ---------------------------------- Types --------------------------------- */
@@ -34,21 +39,73 @@ const MIN_AMOUNT = 10;
 
 /* ------------------------------- Illustrations ----------------------------- */
 
-const SunArcs: React.FC = () => (
+/** Rainbow that rests on the rule above the cellar row. */
+const Rainbow: React.FC = () => (
   <svg
-    width="200"
-    height="130"
-    viewBox="0 0 200 130"
-    style={{ position: "absolute", right: 181, top: 239 }}
+    width="170"
+    height="76"
+    viewBox="0 0 180 80"
+    style={{ display: "block", flexShrink: 0 }}
     aria-hidden="true"
   >
     <g fill="none" strokeWidth="14">
-      <path d="M20 140 A80 80 0 0 1 180 140" stroke="#C8341E" />
-      <path d="M34 140 A66 66 0 0 1 166 140" stroke="#F07C2B" />
-      <path d="M48 140 A52 52 0 0 1 152 140" stroke="#F5B82E" />
-      <path d="M62 140 A38 38 0 0 1 138 140" stroke="#FFF4E2" />
+      <path d="M18 80 A72 72 0 0 1 162 80" stroke="#C8341E" />
+      <path d="M32 80 A58 58 0 0 1 148 80" stroke="#F07C2B" />
+      <path d="M46 80 A44 44 0 0 1 134 80" stroke="#F5B82E" />
+      <path d="M60 80 A30 30 0 0 1 120 80" stroke="#FFF4E2" />
     </g>
-    <circle cx="100" cy="140" r="31" fill="#157A78" />
+    <path d="M68 80 A22 22 0 0 1 112 80 Z" fill="#157A78" />
+  </svg>
+);
+
+const MiniBottle: React.FC<{ batch?: BatchInfo }> = ({ batch }) => (
+  <svg width="16" height="28" viewBox="0 0 40 68" aria-hidden="true">
+    <path
+      d="M16 6 L24 6 L24 22 C24 28 32 30 32 38 L32 66 L8 66 L8 38 C8 30 16 28 16 22 Z"
+      fill={batch?.glass ?? INK}
+    />
+    <rect x="15" y="2" width="10" height="12" rx="2" fill={batch?.cap ?? RED} />
+    <rect
+      x="10"
+      y="42"
+      width="20"
+      height="18"
+      rx="3"
+      fill={batch?.labelColor ?? CREAM}
+    />
+  </svg>
+);
+
+const Chevron: React.FC = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="3"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M9 5l7 7-7 7" />
+  </svg>
+);
+
+const KeyIcon: React.FC = () => (
+  <svg
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={RED}
+    strokeWidth="2.2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="7.5" cy="15.5" r="3.5" />
+    <path d="M10 13 20 3M16 7l3 3M13 10l2.5 2.5" />
   </svg>
 );
 
@@ -82,6 +139,95 @@ const sectionTitle: React.CSSProperties = {
   fontSize: 16,
   fontWeight: 800,
   color: RED,
+};
+
+/** Full-width tappable row: icon, label, chevron. */
+const rowButton: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 14,
+  width: "100%",
+  padding: "14px 0",
+  border: 0,
+  background: "transparent",
+  fontFamily: SANS,
+  color: INK,
+  cursor: "pointer",
+  textAlign: "left",
+};
+
+const ActivityRow: React.FC<{ row: Activity; batch?: BatchInfo }> = ({
+  row,
+  batch,
+}) => {
+  const positive = row.amount !== undefined && row.amount > 0n;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 0",
+        borderBottom: `1.5px solid ${RULE_SOFT}`,
+      }}
+    >
+      <span
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: "50%",
+          background: CREAM,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        {row.kind === "funds" ? (
+          <PlusIcon size={18} stroke={INK} width={2.4} />
+        ) : (
+          <MiniBottle batch={batch} />
+        )}
+      </span>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 15,
+            fontWeight: 800,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {row.title}
+        </span>
+        <span style={{ fontSize: 12, color: INK_SOFT }}>
+          {shortDate(row.at / 1000)}
+        </span>
+      </div>
+      {row.amount !== undefined && (
+        <span
+          style={{
+            ...mono,
+            fontSize: 14,
+            whiteSpace: "nowrap",
+            color: positive ? TEAL_DARK : INK,
+          }}
+        >
+          {positive ? "+" : ""}
+          {money(row.amount, row.symbol ?? "$")}
+        </span>
+      )}
+    </div>
+  );
 };
 
 const visuallyHidden: React.CSSProperties = {
@@ -168,6 +314,15 @@ const Wallet: React.FC = () => {
   const [fundError, setFundError] = React.useState<string | null>(null);
   const [fundHash, setFundHash] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
+  const [recovery, setRecovery] = React.useState<
+    "idle" | "busy" | "done" | { error: string }
+  >("idle");
+  const catalogue = useCatalogue();
+  const activity = useActivity(address);
+  const batchById = React.useMemo(
+    () => new Map(catalogue.map((b) => [b.batchId, b])),
+    [catalogue],
+  );
 
   const isEUR = cur === "EUR";
   const sym = isEUR ? "€" : "$";
@@ -228,11 +383,38 @@ const Wallet: React.FC = () => {
     setFundError(null);
     try {
       setFundHash(await requestFunds(address, coin, value));
+      recordActivity(address, {
+        kind: "funds",
+        title: "Added funds · Treasury",
+        amount: BigInt(Math.round(value * 100)) * 10n ** 5n,
+        symbol: sym,
+      });
       refreshTreasury();
     } catch (err) {
       setFundError(err instanceof Error ? err.message : String(err));
     } finally {
       setFunding(false);
+    }
+  };
+
+  /** Registers a second passkey on the account's admin rule (context rule 0). */
+  const addRecoveryPasskey = async () => {
+    if (!address) {
+      navigate("/signin");
+      return;
+    }
+    setRecovery("busy");
+    try {
+      const { transaction } = await getKit().signers.addPasskey(
+        0,
+        APP_NAME,
+        "Fermento recovery",
+        { nickname: "Recovery passkey" },
+      );
+      await account.submit(transaction);
+      setRecovery("done");
+    } catch (err) {
+      setRecovery({ error: err instanceof Error ? err.message : String(err) });
     }
   };
 
@@ -256,8 +438,6 @@ const Wallet: React.FC = () => {
           padding: "18px 24px 0",
         }}
       >
-        <SunArcs />
-
         <div
           style={{
             position: "relative",
@@ -316,7 +496,6 @@ const Wallet: React.FC = () => {
             fontSize: 44,
             lineHeight: 0.95,
             letterSpacing: "-0.04em",
-            textAlign: "center",
           }}
         >
           Wallet
@@ -389,20 +568,24 @@ const Wallet: React.FC = () => {
           Add funds
         </button>
 
+        {/* Rainbow rests on the rule; the currency switch sits to its right */}
         <div
           style={{
             display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
             gap: 12,
+            borderBottom: `1.5px solid ${RULE_SOFT}`,
           }}
         >
+          <Rainbow />
           <div
             role="group"
             aria-label="Display currency"
             style={{
               display: "flex",
               padding: 4,
+              marginBottom: 14,
               borderRadius: 26,
               background: CREAM,
             }}
@@ -421,7 +604,64 @@ const Wallet: React.FC = () => {
           </div>
         </div>
 
-        <Holdings />
+        <div style={{ marginTop: -16 }}>
+          <Holdings />
+        </div>
+
+        {address && (
+          <section style={{ display: "flex", flexDirection: "column" }}>
+            <h2 style={{ ...sectionTitle, margin: "0 0 4px" }}>
+              Recent activity
+            </h2>
+            {activity.length === 0 && (
+              <p
+                style={{
+                  margin: 0,
+                  padding: "6px 0 10px",
+                  fontSize: 14,
+                  color: INK_SOFT,
+                }}
+              >
+                Nothing yet. Funds you add and shares you buy show up here.
+              </p>
+            )}
+            {activity.slice(0, 6).map((a) => (
+              <ActivityRow
+                key={a.id}
+                row={a}
+                batch={
+                  a.batchId === undefined ? undefined : batchById.get(a.batchId)
+                }
+              />
+            ))}
+          </section>
+        )}
+
+        {address && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => void addRecoveryPasskey()}
+              disabled={recovery === "busy"}
+              style={rowButton}
+            >
+              <KeyIcon />
+              <span style={{ flex: 1, fontSize: 16, fontWeight: 800 }}>
+                {recovery === "busy"
+                  ? "Creating passkey…"
+                  : recovery === "done"
+                    ? "Recovery passkey added"
+                    : "Add a recovery passkey"}
+              </span>
+              <Chevron />
+            </button>
+            {typeof recovery === "object" && (
+              <p style={{ margin: 0, fontSize: 13, color: RED }}>
+                {recovery.error}
+              </p>
+            )}
+          </div>
+        )}
 
         {address && (
           <button
