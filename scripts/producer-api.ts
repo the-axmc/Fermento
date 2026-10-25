@@ -36,17 +36,21 @@ import { execSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
+  Address,
   Asset,
   Contract,
   Horizon,
   Keypair,
   Networks,
   Operation,
+  StrKey,
   TransactionBuilder,
   contract,
+  hash,
   nativeToScVal,
   rpc,
   scValToNative,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { Client as RegistryClient } from "batch_registry_contract";
 import { Client as SharesClient } from "batch_shares_contract";
@@ -134,6 +138,8 @@ interface StoredBatch {
   /** False for ferments the producer only tracks (no share asset, no offering). */
   onSale: boolean;
   shareToken?: string;
+  /** Confidential wrapper of the share token (OpenZeppelin confidential token). */
+  confidentialToken?: string;
   /** Locked issuer of the share asset (master weight 0). */
   shareIssuer?: string;
   sensorPublic: string;
@@ -488,6 +494,51 @@ const issueShareAsset = async (code: string) => {
   return { sac, issuer: issuer.publicKey() };
 };
 
+/* ---------------------------- Confidential wrapper --------------------------- */
+//
+// One OpenZeppelin confidential token per batch, deployed from the code already
+// on testnet (CONFIDENTIAL_TOKEN_WASM) over the batch's share SAC, pointing at
+// the shared UltraHonk verifier and Fermento's auditor registry. Holders then
+// register, deposit and move shares privately from the app.
+
+const confidentialReady = () =>
+  !!(
+    deployed.CONFIDENTIAL_TOKEN_WASM &&
+    deployed.CONFIDENTIAL_VERIFIER &&
+    deployed.CONFIDENTIAL_AUDITOR
+  );
+
+/** Deploy the wrapper for a share token; the address derives from a random salt. */
+const deployConfidentialWrapper = async (
+  shareToken: string,
+): Promise<string> => {
+  const salt = Buffer.from(Keypair.random().rawPublicKey());
+  const op = Operation.createCustomContract({
+    address: new Address(admin.publicKey()),
+    wasmHash: Buffer.from(deployed.CONFIDENTIAL_TOKEN_WASM, "hex"),
+    salt,
+    constructorArgs: [
+      nativeToScVal(shareToken, { type: "address" }),
+      nativeToScVal(deployed.CONFIDENTIAL_VERIFIER, { type: "address" }),
+      nativeToScVal(deployed.CONFIDENTIAL_AUDITOR, { type: "address" }),
+    ],
+  });
+  await invoke(op);
+  // Deterministic: contract id = sha256(network id | address | salt).
+  const preimage = xdr.HashIdPreimage.envelopeTypeContractId(
+    new xdr.HashIdPreimageContractId({
+      networkId: hash(Buffer.from(PASSPHRASE)),
+      contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+        new xdr.ContractIdPreimageFromAddress({
+          address: new Address(admin.publicKey()).toScAddress(),
+          salt,
+        }),
+      ),
+    }),
+  );
+  return StrKey.encodeContract(hash(preimage.toXDR()));
+};
+
 /* ------------------------------- The listing ------------------------------- */
 
 interface ListingRequest {
@@ -591,6 +642,7 @@ const listBatch = async (req: ListingRequest, origin: string) => {
 
   let shareToken: string | undefined;
   let shareIssuer: string | undefined;
+  let confidentialToken: string | undefined;
   if (onSale) {
     // 5. share asset from a fresh, locked issuer; SAC admin is the shares contract.
     //    A retry after a failure here issues a new asset: nothing was sold yet.
@@ -622,6 +674,15 @@ const listBatch = async (req: ListingRequest, origin: string) => {
           caller,
         }),
       );
+
+    // 7. confidential wrapper, so holders can keep their shares private
+    if (confidentialReady()) {
+      const existing = store.find((b) => b.batchId === batchId);
+      confidentialToken =
+        existing?.confidentialToken ??
+        (await deployConfidentialWrapper(shareToken));
+      txs.confidential = confidentialToken;
+    }
   }
 
   // The producer's page exists from the first listing on.
@@ -653,6 +714,7 @@ const listBatch = async (req: ListingRequest, origin: string) => {
     tile: d.colors[3],
     onSale,
     shareToken,
+    confidentialToken,
     shareIssuer,
     sensorPublic: sensor.publicKey(),
     sensorSecret: sensor.secret(),

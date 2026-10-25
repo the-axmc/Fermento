@@ -11,6 +11,7 @@ import { SHARES_ID, USDC_ID, getShares } from "../contracts/client";
 import { recordActivity } from "../lib/activity";
 import { celsius, money, pctChange, progress, shortDate } from "../lib/format";
 import Checkins from "../components/Checkins";
+import PrivacyCard from "../components/PrivacyCard";
 import { useProducer } from "../hooks/useProducer";
 import "./Batch.css";
 
@@ -663,6 +664,10 @@ const Batch: React.FC = () => {
   );
   const certified = producer?.tier === "certified" || !!rating?.certified;
   const mine = !!account.address && chain.producer === account.address;
+  const publicShares = useBalance(
+    chain.offering?.share_token ?? "",
+    account.address,
+  );
   const [buying, setBuying] = React.useState(false);
 
   const offering = chain.offering;
@@ -896,6 +901,16 @@ const Batch: React.FC = () => {
                 </span>
               </div>
             </div>
+
+            {info.confidentialToken && account.address && (
+              <PrivacyCard
+                token={info.confidentialToken}
+                batchId={info.batchId}
+                label={info.label}
+                publicShares={publicShares}
+                onChanged={chain.refresh}
+              />
+            )}
 
             {mine && (
               <Link

@@ -296,7 +296,7 @@ const Portfolio: React.FC = () => {
               <Row
                 key={h.info.batchId}
                 info={h.info}
-                meta={`${h.info.vintage} · ${h.info.label} · ${h.shares.toString()} shares`}
+                meta={`${h.info.vintage} · ${h.info.label} · ${h.shares.toString()} shares${h.privateShares > 0n ? ` · ${h.privateShares.toString()} private` : ""}`}
                 amount={money(h.price * h.shares)}
                 change={pctChange(h.offering.price, h.price)}
                 last={i === holdings.length - 1}

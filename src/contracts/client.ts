@@ -6,6 +6,7 @@
 import { Client as RegistryClient } from "batch_registry_contract";
 import { Client as SharesClient } from "batch_shares_contract";
 import { Client as OracleClient } from "condition_oracle_contract";
+import { Client as ConfidentialClient } from "confidential_token_contract";
 import type { ClientOptions } from "@stellar/stellar-sdk/contract";
 import { networkPassphrase, rpcUrl } from "./util";
 
@@ -41,6 +42,14 @@ export function getShares(signer: ContractSigner = {}): SharesClient {
 /** Condition oracle: signed cellar readings, age curves and the value mark. */
 export function getOracle(signer: ContractSigner = {}): OracleClient {
   return new OracleClient(base(ORACLE_ID, signer));
+}
+
+/** Confidential wrapper of one batch's share token: register, deposit, merge, transfer, withdraw. */
+export function getConfidential(
+  contractId: string,
+  signer: ContractSigner = {},
+): ConfidentialClient {
+  return new ConfidentialClient(base(contractId, signer));
 }
 
 /** Kept for code that still refers to the single registry client. */
