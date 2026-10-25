@@ -64,11 +64,12 @@ const SunArcs: React.FC = () => (
     viewBox="0 0 230 150"
     style={{
       position: "absolute",
-      right: -30,
-      top: 54,
-      width: 200,
-      height: 91,
+      right: 24,
+      top: 134,
+      width: 160,
+      height: 84,
     }}
+    preserveAspectRatio="xMaxYMax meet"
     aria-hidden="true"
   >
     <g fill="none" strokeWidth="16">
@@ -99,15 +100,17 @@ const oneLine: React.CSSProperties = {
 };
 
 const viewButtonStyle = (active: boolean): React.CSSProperties => ({
-  width: 40,
-  height: 36,
-  padding: 0,
-  borderRadius: 18,
+  height: 44,
+  padding: "0 16px",
+  borderRadius: 22,
   border: 0,
   display: "flex",
   alignItems: "center",
-  justifyContent: "center",
+  gap: 7,
   cursor: "pointer",
+  fontFamily: SANS,
+  fontSize: 15,
+  fontWeight: 700,
   background: active ? RED : "transparent",
   color: active ? CREAM : INK,
 });
@@ -314,93 +317,27 @@ const Market: React.FC = () => {
       >
         <SunArcs />
 
-        {/* Brand on the left, view switch on the right: one row instead of three */}
         <div
           style={{
             position: "relative",
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 12,
-            minHeight: 36,
+            fontFamily: DISPLAY,
+            fontSize: 20,
+            lineHeight: 1,
+            color: RED,
           }}
         >
-          <div
-            style={{
-              fontFamily: DISPLAY,
-              fontSize: 20,
-              lineHeight: 1,
-              color: RED,
-            }}
-          >
-            Fermentos
-            <br />
-            Norberto <span style={{ color: INK }}>&amp;</span> Raimunda
-          </div>
-
-          <div
-            role="group"
-            aria-label="View"
-            style={{
-              display: "flex",
-              flexShrink: 0,
-              padding: 3,
-              borderRadius: 22,
-              background: CREAM,
-            }}
-          >
-            <button
-              type="button"
-              aria-pressed={view === "list"}
-              aria-label="List view"
-              onClick={() => setView("list")}
-              style={viewButtonStyle(view === "list")}
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <circle cx="5" cy="6" r="2.2" />
-                <circle cx="5" cy="12" r="2.2" />
-                <circle cx="5" cy="18" r="2.2" />
-                <rect x="9.5" y="4.5" width="11.5" height="3" rx="1.5" />
-                <rect x="9.5" y="10.5" width="11.5" height="3" rx="1.5" />
-                <rect x="9.5" y="16.5" width="11.5" height="3" rx="1.5" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === "grid"}
-              aria-label="Grid view"
-              onClick={() => setView("grid")}
-              style={viewButtonStyle(view === "grid")}
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <rect x="3" y="3" width="8" height="8" rx="2.5" />
-                <rect x="13" y="3" width="8" height="8" rx="4" />
-                <rect x="3" y="13" width="8" height="8" rx="4" />
-                <rect x="13" y="13" width="8" height="8" rx="2.5" />
-              </svg>
-            </button>
-          </div>
+          Fermentos
+          <br />
+          Norberto <span style={{ color: INK }}>&amp;</span> Raimunda
         </div>
 
         <h1
           style={{
             position: "relative",
-            margin: "6px 0 0",
+            margin: "22px 0 0",
             fontFamily: SANS,
             fontWeight: 800,
-            fontSize: 38,
+            fontSize: 44,
             lineHeight: 0.95,
             letterSpacing: "-0.04em",
             color: INK,
@@ -408,6 +345,63 @@ const Market: React.FC = () => {
         >
           The market
         </h1>
+
+        {/* View switch on the left; the rainbow sits to its right, on the search bar */}
+        <div
+          role="group"
+          aria-label="View"
+          style={{
+            position: "relative",
+            display: "flex",
+            alignSelf: "flex-start",
+            padding: 4,
+            borderRadius: 26,
+            background: CREAM,
+          }}
+        >
+          <button
+            type="button"
+            aria-pressed={view === "list"}
+            onClick={() => setView("list")}
+            style={viewButtonStyle(view === "list")}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <circle cx="5" cy="6" r="2.2" />
+              <circle cx="5" cy="12" r="2.2" />
+              <circle cx="5" cy="18" r="2.2" />
+              <rect x="9.5" y="4.5" width="11.5" height="3" rx="1.5" />
+              <rect x="9.5" y="10.5" width="11.5" height="3" rx="1.5" />
+              <rect x="9.5" y="16.5" width="11.5" height="3" rx="1.5" />
+            </svg>
+            List
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === "grid"}
+            onClick={() => setView("grid")}
+            style={viewButtonStyle(view === "grid")}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="8" height="8" rx="2.5" />
+              <rect x="13" y="3" width="8" height="8" rx="4" />
+              <rect x="3" y="13" width="8" height="8" rx="4" />
+              <rect x="13" y="13" width="8" height="8" rx="2.5" />
+            </svg>
+            Grid
+          </button>
+        </div>
 
         <label
           style={{
