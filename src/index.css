@@ -1,3 +1,105 @@
-/* index.css */
-/* Import font (replacing Inter/Inconsolata) */
+/* index.css: global reset, page frame and responsive rules */
 @import url("https://fonts.googleapis.com/css2?family=VT323&display=swap");
+
+:root {
+  /* Width of the phone-shaped column that every page lays out in */
+  --frame: 390px;
+  /* Room reserved under the content for the floating tab bar */
+  --nav-clear: 104px;
+  --nav-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+html {
+  background: #7fd8d6;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ------------------------------ Page frame ------------------------------- */
+
+/* Full-height column: content first, then the landscape fills what is left. */
+.frame {
+  position: relative;
+  width: 100%;
+  max-width: var(--frame);
+  min-height: 100dvh;
+  margin: 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Hills at the bottom of a frame. It grows to absorb free space so a short
+   page never scrolls, and shrinks to its minimum when content needs the room. */
+.landscape {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: var(--nav-clear);
+  margin: 12px -24px 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.landscape > svg {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+}
+
+/* Market list: a column on phones, two columns on large screens */
+.market-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------ Large screens ---------------------------- */
+
+@media (min-width: 760px) {
+  :root {
+    --frame: 680px;
+  }
+  .market-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 36px;
+  }
+  .market-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+  /* Illustrations keep their phone size instead of growing with the frame */
+  .hero-art {
+    width: 100% !important;
+    max-width: 440px !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+  .batch-tags {
+    width: 100%;
+    max-width: 480px;
+    box-sizing: border-box;
+    margin: 0 auto;
+  }
+  /* Wide rainbow keeps a phone-like height; the arcs are cropped from the top */
+  .produce-rainbow {
+    height: 200px;
+  }
+}
+
+@media (min-width: 1100px) {
+  :root {
+    --frame: 820px;
+  }
+}

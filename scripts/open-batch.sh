@@ -69,12 +69,22 @@ inv --id "$ORACLE_ID" -- register_batch --caller "$ADMIN_PK" --config "{
   \"temp_min\": $TEMP_MIN, \"temp_max\": $TEMP_MAX,
   \"humidity_min\": $HUM_MIN, \"humidity_max\": $HUM_MAX }" >/dev/null
 
-echo "== 4. share asset"
+echo "== 4. share asset from a fresh issuer, SAC admin handed to batch_shares, issuer locked"
 CODE="$(printf 'FERM%03d' "$BATCH")"
-SHARE_SAC="$(stellar contract asset deploy --asset "$CODE:$ADMIN_PK" --source "$ADMIN" --network "$NETWORK" 2>/dev/null \
-  || stellar contract id asset --asset "$CODE:$ADMIN_PK" --network "$NETWORK")"
-echo "share asset $CODE: $SHARE_SAC"
-inv --id "$SHARE_SAC" -- set_admin --new_admin "$SHARES_ID" >/dev/null
+ISSUER="issuer-$BATCH"
+if ! stellar keys public-key "$ISSUER" >/dev/null 2>&1; then
+  stellar keys generate "$ISSUER" >/dev/null
+fi
+ISSUER_PK="$(stellar keys public-key "$ISSUER")"
+# Fund the issuer from the admin (3 XLM covers the account and one trustline-free asset).
+stellar tx new create-account --source "$ADMIN" --network "$NETWORK" \
+  --destination "$ISSUER_PK" --starting-balance 30000000 >/dev/null 2>&1 || true
+SHARE_SAC="$(stellar contract asset deploy --asset "$CODE:$ISSUER_PK" --source "$ADMIN" --network "$NETWORK" 2>/dev/null \
+  || stellar contract id asset --asset "$CODE:$ISSUER_PK" --network "$NETWORK")"
+echo "share asset $CODE: $SHARE_SAC (issuer $ISSUER_PK)"
+stellar contract invoke --source "$ISSUER" --network "$NETWORK" --id "$SHARE_SAC" -- set_admin --new_admin "$SHARES_ID" >/dev/null
+# Lock the issuer: after set_admin only the shares contract can mint.
+stellar tx new set-options --source "$ISSUER" --network "$NETWORK" --master-weight 0 >/dev/null
 
 echo "== 5. shares: open_offering"
 inv --id "$SHARES_ID" -- open_offering --batch_id "$BATCH" --share_token "$SHARE_SAC" \
@@ -84,6 +94,7 @@ inv --id "$SHARES_ID" -- open_offering --batch_id "$BATCH" --share_token "$SHARE
 
 cat >> "$ROOT/deploy/testnet.env" <<EOF
 BATCH_${BATCH}_SHARE_SAC=$SHARE_SAC
+BATCH_${BATCH}_SHARE_ISSUER=$ISSUER_PK
 BATCH_${BATCH}_SENSOR=$SENSOR
 EOF
 

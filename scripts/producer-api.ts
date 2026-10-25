@@ -114,6 +114,8 @@ interface StoredBatch {
   labelColor: string;
   tile: string;
   shareToken: string;
+  /** Locked issuer of the share asset (master weight 0). */
+  shareIssuer?: string;
   sensorPublic: string;
   /** Kept server side only. */
   sensorSecret: string;
@@ -247,9 +249,12 @@ const send = async <T>(
   return hash;
 };
 
-/** Sign and submit a raw operation from the admin account. */
-const invoke = async (op: ReturnType<typeof Operation.invokeHostFunction>) => {
-  const account = await server.getAccount(admin.publicKey());
+/** Sign and submit a raw operation from `signer`. */
+const invokeAs = async (
+  signer: Keypair,
+  op: ReturnType<typeof Operation.invokeHostFunction>,
+) => {
+  const account = await server.getAccount(signer.publicKey());
   const tx = new TransactionBuilder(account, {
     fee: "100000",
     networkPassphrase: PASSPHRASE,
@@ -258,18 +263,15 @@ const invoke = async (op: ReturnType<typeof Operation.invokeHostFunction>) => {
     .setTimeout(60)
     .build();
   const prepared = await server.prepareTransaction(tx);
-  prepared.sign(admin);
+  prepared.sign(signer);
   const sent = await server.sendTransaction(prepared);
   if (sent.status !== "PENDING") {
     throw new Error(
       `send failed: ${sent.status} ${JSON.stringify(sent.errorResult)}`,
     );
   }
-  let result = await server.getTransaction(sent.hash);
-  while (result.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1500));
-    result = await server.getTransaction(sent.hash);
-  }
+  // pollTransaction retries getTransaction with a bounded attempt count.
+  const result = await server.pollTransaction(sent.hash, { attempts: 30 });
   if (result.status !== "SUCCESS")
     throw new Error(`tx ${sent.hash} ${result.status}`);
   return sent.hash;
@@ -290,17 +292,59 @@ const sacAdmin = async (sac: string): Promise<string | undefined> => {
   return scValToNative(sim.result.retval) as string;
 };
 
-/** Deploy the Stellar Asset Contract for a classic asset, or reuse it. */
-const ensureShareAsset = async (code: string) => {
-  const asset = new Asset(code, admin.publicKey());
-  const id = asset.contractId(PASSPHRASE);
-  try {
-    await invoke(Operation.createStellarAssetContract({ asset }));
-  } catch (err) {
-    // Already deployed from an earlier attempt: the id is deterministic.
-    if (!/ExistingValue|Existence/.test(String(err))) throw err;
-  }
-  return id;
+/** Sign and submit a raw operation from the admin account. */
+const invoke = (op: ReturnType<typeof Operation.invokeHostFunction>) =>
+  invokeAs(admin, op);
+
+/**
+ * Share asset with its own locked issuer (skills.stellar.org assets guidance):
+ * a fresh account issues the classic asset, deploys its SAC, hands SAC admin
+ * to the shares contract, then sets its master weight to 0. After that nobody
+ * can mint outside the contract. Returns the SAC id and the issuer public key.
+ */
+const issueShareAsset = async (code: string) => {
+  const issuer = Keypair.random();
+  const asset = new Asset(code, issuer.publicKey());
+  const sac = asset.contractId(PASSPHRASE);
+
+  // 1. Fund the issuer from the admin (classic op, via Horizon).
+  const adminAccount = await horizon.loadAccount(admin.publicKey());
+  const createTx = new TransactionBuilder(adminAccount, {
+    fee: "10000",
+    networkPassphrase: PASSPHRASE,
+  })
+    .addOperation(
+      Operation.createAccount({
+        destination: issuer.publicKey(),
+        startingBalance: "3",
+      }),
+    )
+    .setTimeout(60)
+    .build();
+  createTx.sign(admin);
+  await horizon.submitTransaction(createTx);
+
+  // 2. Deploy the SAC (anyone may), then set_admin and lock as the issuer.
+  await invoke(Operation.createStellarAssetContract({ asset }));
+  await invokeAs(
+    issuer,
+    new Contract(sac).call(
+      "set_admin",
+      nativeToScVal(deployed.SHARES_ID, { type: "address" }),
+    ),
+  );
+  const issuerAccount = await horizon.loadAccount(issuer.publicKey());
+  const lockTx = new TransactionBuilder(issuerAccount, {
+    fee: "10000",
+    networkPassphrase: PASSPHRASE,
+  })
+    .addOperation(Operation.setOptions({ masterWeight: 0 }))
+    .setTimeout(60)
+    .build();
+  lockTx.sign(issuer);
+  await horizon.submitTransaction(lockTx);
+
+  return { sac, issuer: issuer.publicKey() };
 };
 
 /* ------------------------------- The listing ------------------------------- */
@@ -392,17 +436,16 @@ const listBatch = async (req: ListingRequest, origin: string) => {
       }),
     );
 
-  // 4. share asset, admin handed to the shares contract
+  // 4. share asset from a fresh, locked issuer; SAC admin is the shares contract.
+  //    A retry after a failure here issues a new asset: nothing was sold yet.
   const code = `FERM${String(batchId).padStart(3, "0")}`;
-  const shareToken = await ensureShareAsset(code);
-  if ((await sacAdmin(shareToken)) !== deployed.SHARES_ID) {
-    txs.setAdmin = await invoke(
-      new Contract(shareToken).call(
-        "set_admin",
-        nativeToScVal(deployed.SHARES_ID, { type: "address" }),
-      ),
-    );
-  }
+  const existing = store.find((b) => b.batchId === batchId);
+  const { sac: shareToken, issuer: shareIssuer } =
+    existing?.shareToken &&
+    (await sacAdmin(existing.shareToken)) === deployed.SHARES_ID
+      ? { sac: existing.shareToken, issuer: existing.shareIssuer ?? "" }
+      : await issueShareAsset(code);
+  txs.shareAsset = shareToken;
 
   // 5. primary offering
   const offered = await exists(() => shares.offering({ batch_id: batchId }));
@@ -441,6 +484,7 @@ const listBatch = async (req: ListingRequest, origin: string) => {
     labelColor: d.colors[2],
     tile: d.colors[3],
     shareToken,
+    shareIssuer,
     sensorPublic: sensor.publicKey(),
     sensorSecret: sensor.secret(),
     listedAt: new Date().toISOString(),
@@ -552,11 +596,8 @@ const fund = async (to: string, code: string, amount: number) => {
       `send failed: ${sent.status} ${JSON.stringify(sent.errorResult)}`,
     );
   }
-  let result = await server.getTransaction(sent.hash);
-  while (result.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1500));
-    result = await server.getTransaction(sent.hash);
-  }
+  // pollTransaction retries getTransaction with a bounded attempt count.
+  const result = await server.pollTransaction(sent.hash, { attempts: 30 });
   if (result.status !== "SUCCESS")
     throw new Error(`tx ${sent.hash} ${result.status}`);
   return sent.hash;

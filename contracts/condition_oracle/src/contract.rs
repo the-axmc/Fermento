@@ -18,9 +18,10 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, Symbol, Vec,
+    Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
+use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
 use stellar_macros::only_role;
 
 const BPS: i128 = 10_000;
@@ -141,6 +142,24 @@ pub struct MarkPublished {
     pub timestamp: u64,
 }
 
+
+// ################## STORAGE TTL ##################
+//
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
+
+fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
+    e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 // ################## CONTRACT ##################
 
 #[contract]
@@ -151,6 +170,7 @@ impl ConditionOracle {
     pub fn __constructor(e: &Env, admin: Address, curator: Address) {
         access_control::set_admin(e, &admin);
         access_control::grant_role_no_auth(e, &curator, &Symbol::new(e, "curator"), &admin);
+        access_control::grant_role_no_auth(e, &admin, &Symbol::new(e, "upgrader"), &admin);
     }
 
     // ---------- curation ----------
@@ -167,7 +187,8 @@ impl ConditionOracle {
                 panic_with_error!(e, OracleError::InvalidCurve);
             }
         }
-        e.storage().persistent().set(&DataKey::Curve(category), &points);
+        e.storage().persistent().set(&DataKey::Curve(category.clone()), &points);
+        keep_key(e, &DataKey::Curve(category));
     }
 
     #[only_role(caller, "curator")]
@@ -186,10 +207,12 @@ impl ConditionOracle {
             panic_with_error!(e, OracleError::InvalidTerms);
         }
         e.storage().persistent().set(&DataKey::Batch(config.batch_id), &config);
+        keep_key(e, &DataKey::Batch(config.batch_id));
         e.storage().persistent().set(
             &DataKey::Stats(config.batch_id),
             &Stats { total: 0, in_range: 0, last_timestamp: 0, last_temp_c: 0, last_humidity: 0 },
         );
+        keep_key(e, &DataKey::Stats(config.batch_id));
     }
 
     /// Rotate the sensor key of a batch.
@@ -198,6 +221,7 @@ impl ConditionOracle {
         let mut config = Self::load(e, batch_id);
         config.sensor = sensor;
         e.storage().persistent().set(&DataKey::Batch(batch_id), &config);
+        keep_key(e, &DataKey::Batch(batch_id));
     }
 
     // ---------- readings ----------
@@ -235,6 +259,7 @@ impl ConditionOracle {
         stats.last_temp_c = reading.temp_c;
         stats.last_humidity = reading.humidity;
         e.storage().persistent().set(&DataKey::Stats(batch_id), &stats);
+        keep_key(e, &DataKey::Stats(batch_id));
 
         ReadingPosted {
             batch_id,
@@ -270,6 +295,7 @@ impl ConditionOracle {
         }
         history.push_back(mark.clone());
         e.storage().persistent().set(&DataKey::Marks(batch_id), &history);
+        keep_key(e, &DataKey::Marks(batch_id));
         MarkPublished { batch_id, value: mark.value, timestamp: mark.timestamp }.publish(e);
         mark
     }
@@ -351,6 +377,14 @@ impl ConditionOracle {
         }
         let share = stats.in_range as i128 * BPS / stats.total as i128;
         MIN_CONDITION_BPS + (BPS - MIN_CONDITION_BPS) * share / BPS
+    }
+}
+
+#[contractimpl]
+impl Upgradeable for ConditionOracle {
+    #[only_role(operator, "upgrader")]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        upgradeable::upgrade(e, &new_wasm_hash);
     }
 }
 

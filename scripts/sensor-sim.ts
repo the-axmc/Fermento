@@ -18,6 +18,7 @@
  *   DRIFT             "warm" pushes the random walk out of range, for the demo
  */
 
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import {
   Contract,
@@ -65,9 +66,21 @@ const storedSensor = (() => {
     return undefined;
   }
 })();
-const sensorSecret = process.env.SENSOR_SECRET ?? storedSensor;
+/** Batches opened with scripts/open-batch.sh record a CLI key name in deploy/testnet.env. */
+const cliSensor = (() => {
+  const name = deployed[`BATCH_${batchId}_SENSOR`];
+  if (!name) return undefined;
+  try {
+    return execSync(`stellar keys secret ${name}`).toString().trim();
+  } catch {
+    return undefined;
+  }
+})();
+const sensorSecret = process.env.SENSOR_SECRET ?? storedSensor ?? cliSensor;
 if (!sensorSecret) {
-  throw new Error("SENSOR_SECRET missing and batch not in deploy/batches.json");
+  throw new Error(
+    "SENSOR_SECRET missing; batch not in deploy/batches.json or deploy/testnet.env",
+  );
 }
 const sensor = Keypair.fromSecret(sensorSecret);
 const relayer = process.env.RELAYER_SECRET
@@ -126,11 +139,8 @@ async function invoke(op: xdr.Operation) {
       `send failed: ${sent.status} ${JSON.stringify(sent.errorResult)}`,
     );
   }
-  let result = await server.getTransaction(sent.hash);
-  while (result.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1500));
-    result = await server.getTransaction(sent.hash);
-  }
+  // pollTransaction retries getTransaction with a bounded attempt count.
+  const result = await server.pollTransaction(sent.hash, { attempts: 30 });
   if (result.status !== "SUCCESS")
     throw new Error(`tx ${sent.hash} ${result.status}`);
   return { hash: sent.hash, returnValue: result.returnValue };

@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    BytesN, Env, String, Symbol, Vec,
+    BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
 use stellar_contract_utils::pausable::{self as pausable, Pausable};
@@ -92,6 +92,24 @@ pub struct UnitsClaimed {
     pub units: u32,
 }
 
+
+// ################## STORAGE TTL ##################
+//
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
+
+fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
+    e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 // ################## CONTRACT ##################
 
 #[contract]
@@ -132,8 +150,10 @@ impl BatchRegistry {
     pub fn register_batch(e: &Env, to: Address, batch_id: u32, uri: String, caller: Address) {
         <Self as NonFungibleToken>::ContractType::mint_with_id(e, &to, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
+        keep_key(e, &BatchKey::Uri(batch_id));
         let stage = Symbol::new(e, "filled");
         e.storage().persistent().set(&BatchKey::Stage(batch_id), &stage);
+        keep_key(e, &BatchKey::Stage(batch_id));
         BatchRegistered { batch_id, owner: to, uri }.publish(e);
         BatchStageChanged { batch_id, stage }.publish(e);
     }
@@ -144,6 +164,7 @@ impl BatchRegistry {
         // Panics with NonExistentToken when the batch was never minted.
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
+        keep_key(e, &BatchKey::Uri(batch_id));
     }
 
     /// Move a batch to a new lifecycle stage and emit `BatchStageChanged`.
@@ -151,6 +172,7 @@ impl BatchRegistry {
     pub fn set_stage(e: &Env, batch_id: u32, stage: Symbol, caller: Address) {
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Stage(batch_id), &stage);
+        keep_key(e, &BatchKey::Stage(batch_id));
         BatchStageChanged { batch_id, stage }.publish(e);
     }
 
@@ -174,9 +196,11 @@ impl BatchRegistry {
 
         let claimed: u32 = e.storage().persistent().get(&BatchKey::Claimed(batch_id)).unwrap_or(0);
         e.storage().persistent().set(&BatchKey::Claimed(batch_id), &(claimed + units));
+        keep_key(e, &BatchKey::Claimed(batch_id));
 
         let record = UnitClaim { batch_id, claimer: claimer.clone(), units, ledger: e.ledger().sequence() };
         e.storage().persistent().set(&BatchKey::Claim(claim_id), &record);
+        keep_key(e, &BatchKey::Claim(claim_id));
 
         UnitsClaimed { batch_id, claim_id, claimer, units }.publish(e);
         claim_id

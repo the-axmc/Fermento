@@ -15,10 +15,11 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, token, Address, Env, Symbol, Vec,
+    panic_with_error, token, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
 use stellar_contract_utils::pausable::{self as pausable, Pausable};
+use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
 use stellar_macros::{only_admin, only_role, when_not_paused};
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -145,6 +146,24 @@ pub struct OfferingClosed {
     pub batch_id: u32,
 }
 
+
+// ################## STORAGE TTL ##################
+//
+// Rent: every write extends the small persistent entry it touches, so active
+// batches keep their own data alive. It only triggers within 2 days of archival
+// (fresh entries start with the 7-day network minimum), since rent on testnet
+// makes every extension noticeable. The contract instance and code
+// (35 KB, expensive to extend on testnet) are kept alive out of band by the
+// platform with `stellar contract extend` (scripts/extend-ttl.sh); anyone may.
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 2 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 14 * DAY_IN_LEDGERS;
+
+fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
+    e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 // ################## CONTRACT ##################
 
 #[contract]
@@ -165,6 +184,7 @@ impl BatchShares {
         access_control::set_admin(e, &admin);
         access_control::grant_role_no_auth(e, &issuer, &Symbol::new(e, "issuer"), &admin);
         access_control::grant_role_no_auth(e, &pauser, &Symbol::new(e, "pauser"), &admin);
+        access_control::grant_role_no_auth(e, &admin, &Symbol::new(e, "upgrader"), &admin);
         e.storage().instance().set(&DataKey::PaymentToken, &payment_token);
         e.storage().instance().set(&DataKey::Registry, &registry);
         e.storage().instance().set(&DataKey::Treasury, &treasury);
@@ -215,6 +235,7 @@ impl BatchShares {
             open: true,
         };
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
         OfferingOpened { batch_id, share_token, producer, price, total_shares }.publish(e);
     }
 
@@ -224,6 +245,7 @@ impl BatchShares {
         let mut offering = Self::load(e, batch_id);
         offering.open = false;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
         OfferingClosed { batch_id }.publish(e);
     }
 
@@ -234,6 +256,7 @@ impl BatchShares {
         let mut offering = Self::load(e, batch_id);
         offering.matures_at = matures_at;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
     }
 
     #[only_admin]
@@ -265,6 +288,7 @@ impl BatchShares {
 
         offering.sold += shares;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
 
         // Fees for these shares accrue from now; earlier shares keep their
         // checkpoint, so the position is settled at the weighted date.
@@ -279,6 +303,7 @@ impl BatchShares {
             &DataKey::Position(batch_id, buyer.clone()),
             &Position { shares: position.shares + shares, fee_paid_until: paid_until },
         );
+        keep_key(e, &DataKey::Position(batch_id, buyer.clone()));
 
         SharesBought { batch_id, buyer, shares, paid }.publish(e);
         paid
@@ -321,9 +346,11 @@ impl BatchShares {
             &DataKey::Position(batch_id, holder.clone()),
             &Position { shares: remaining, fee_paid_until: now },
         );
+        keep_key(e, &DataKey::Position(batch_id, holder.clone()));
 
         offering.redeemed += shares;
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
+        keep_key(e, &DataKey::Offering(batch_id));
 
         let claim_id =
             RegistryClient::new(e, &Self::registry(e)).claim(&batch_id, &holder, &units, &this);
@@ -417,6 +444,14 @@ impl BatchShares {
 }
 
 // ################## UTILS ##################
+
+#[contractimpl]
+impl Upgradeable for BatchShares {
+    #[only_role(operator, "upgrader")]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        upgradeable::upgrade(e, &new_wasm_hash);
+    }
+}
 
 #[contractimpl]
 impl Pausable for BatchShares {

@@ -253,7 +253,7 @@ const AddFerment: React.FC = () => {
         style={{
           position: "relative",
           width: "100%",
-          maxWidth: 390,
+          maxWidth: "var(--frame)",
           margin: "0 auto",
         }}
       >
@@ -263,7 +263,7 @@ const AddFerment: React.FC = () => {
             display: "flex",
             alignItems: "center",
             gap: 6,
-            padding: "22px 24px 0",
+            padding: "18px 24px 0",
             minHeight: 44,
           }}
         >
@@ -313,8 +313,10 @@ const AddFerment: React.FC = () => {
 
         {/* Rainbow */}
         <svg
+          className="produce-rainbow"
           viewBox="0 0 390 150"
-          style={{ display: "block", width: "100%", marginTop: 20 }}
+          preserveAspectRatio="xMidYMax slice"
+          style={{ display: "block", width: "100%", marginTop: 8 }}
           aria-hidden="true"
         >
           <g fill="none" strokeWidth="26">
@@ -336,10 +338,10 @@ const AddFerment: React.FC = () => {
             marginTop: -36,
             background: CREAM,
             borderRadius: "32px 32px 0 0",
-            padding: "0 24px 40px",
+            padding: "0 24px calc(var(--nav-clear) + 8px)",
             display: "flex",
             flexDirection: "column",
-            gap: 26,
+            gap: 20,
           }}
         >
           <span

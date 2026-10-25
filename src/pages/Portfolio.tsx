@@ -1,6 +1,5 @@
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import BottomNav from "../components/BottomNav";
 import Landscape from "../components/Landscape";
 import type { BatchInfo } from "../data/batches";
 import { useAccount } from "../hooks/useAccount";
@@ -145,22 +144,14 @@ const Portfolio: React.FC = () => {
   const headline = tab === "bought" ? value : sales;
 
   return (
-    <div style={{ background: BG, overflow: "hidden" }}>
+    <div style={{ background: BG }}>
       <div
+        className="frame"
         style={{
-          position: "relative",
-          width: "100%",
-          maxWidth: 390,
-          minHeight: "100dvh",
-          margin: "0 auto",
-          boxSizing: "border-box",
           color: INK,
           fontFamily: SANS,
-          display: "flex",
-          flexDirection: "column",
-          gap: 22,
-          padding: "22px 24px 110px",
-          overflow: "hidden",
+          gap: 16,
+          padding: "18px 24px 0",
         }}
       >
         <Sun />
@@ -327,42 +318,43 @@ const Portfolio: React.FC = () => {
             ))}
         </div>
 
-        <Link
-          to="/produce"
-          style={{
-            alignSelf: "flex-start",
-            marginTop: -12,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            height: 36,
-            padding: "0 14px 0 16px",
-            borderRadius: 18,
-            background: CREAM,
-            color: INK,
-            fontSize: 14,
-            fontWeight: 700,
-            textDecoration: "none",
-          }}
-        >
-          {produced.length > 0 ? "Your producer page" : "Add a ferment"}
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={RED}
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        {account.address && (
+          <Link
+            to="/produce"
+            style={{
+              alignSelf: "flex-start",
+              marginTop: -12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              height: 36,
+              padding: "0 14px 0 16px",
+              borderRadius: 18,
+              background: CREAM,
+              color: INK,
+              fontSize: 14,
+              fontWeight: 700,
+              textDecoration: "none",
+            }}
           >
-            <path d="M9 5l7 7-7 7" />
-          </svg>
-        </Link>
+            {produced.length > 0 ? "Your producer page" : "Add a ferment"}
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={RED}
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 5l7 7-7 7" />
+            </svg>
+          </Link>
+        )}
 
         <Landscape />
-        <BottomNav />
       </div>
     </div>
   );

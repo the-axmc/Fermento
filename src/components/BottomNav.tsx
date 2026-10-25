@@ -57,7 +57,7 @@ const items: Item[] = [
   {
     to: "/produce",
     label: "Add ferment",
-    match: ["/produce", "/producer"],
+    match: ["/produce"],
     icon: (
       <svg {...iconProps}>
         <rect x="3" y="3" width="18" height="18" rx="5" />
@@ -81,7 +81,7 @@ const items: Item[] = [
 
 /* --------------------------------- Component ------------------------------- */
 
-/** Floating tab bar pinned to the bottom of a page frame (the frame must be position: relative). */
+/** Floating tab bar fixed to the bottom of the viewport. Rendered once by the app shell. */
 const BottomNav: React.FC = () => {
   const { pathname } = useLocation();
 
@@ -89,10 +89,11 @@ const BottomNav: React.FC = () => {
     <nav
       aria-label="Main"
       style={{
-        position: "absolute",
-        left: 16,
-        right: 16,
-        bottom: 26,
+        position: "fixed",
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: "min(100% - 32px, var(--frame) - 32px)",
+        bottom: "var(--nav-bottom)",
         height: 64,
         boxSizing: "border-box",
         padding: "0 10px",
@@ -105,7 +106,7 @@ const BottomNav: React.FC = () => {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        zIndex: 5,
+        zIndex: 20,
       }}
     >
       {items.map((item) => {
@@ -142,19 +143,6 @@ const BottomNav: React.FC = () => {
           </Link>
         );
       })}
-      <span
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          left: "50%",
-          bottom: -18,
-          width: 134,
-          height: 5,
-          marginLeft: -67,
-          borderRadius: 3,
-          background: INK,
-        }}
-      />
     </nav>
   );
 };
