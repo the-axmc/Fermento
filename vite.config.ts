@@ -1,8 +1,14 @@
 import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import wasm from "vite-plugin-wasm";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
+
+/** Generated contract clients live in the workspace; resolve them to their built output. */
+const clients = [
+  "batch_registry_contract",
+  "batch_shares_contract",
+  "condition_oracle_contract",
+];
 
 export default defineConfig({
   plugins: [
@@ -11,26 +17,22 @@ export default defineConfig({
       include: ["buffer"],
       globals: { Buffer: true },
     }),
-    wasm(),
   ],
   resolve: {
-    alias: {
-      non_fungible_contract: path.resolve(
-        __dirname,
-        "packages/non_fungible_contract/dist"
-      ),
-    },
+    alias: Object.fromEntries(
+      clients.map((name) => [
+        name,
+        path.resolve(__dirname, `packages/${name}/dist`),
+      ]),
+    ),
   },
   build: { target: "esnext" },
-  optimizeDeps: { exclude: ["@stellar/stellar-xdr-json"] },
   define: { global: "window" },
   envPrefix: "PUBLIC_",
   server: {
-    proxy: {
-      "/friendbot": {
-        target: "http://localhost:8000/friendbot",
-        changeOrigin: true,
-      },
-    },
+    host: true,
+    port: 5173,
+    // Tunnels used to reach the dev server from a phone (passkeys need HTTPS).
+    allowedHosts: [".loca.lt", ".trycloudflare.com", ".ngrok-free.app"],
   },
 });

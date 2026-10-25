@@ -31,11 +31,10 @@ lerna-debug.log*
 .DS_Store
 
 
-# keep generated client committed
-!packages/non_fungible_contract/**
 
 # generated contract client imports
 src/contracts/*
 !src/contracts/util.ts
 !src/contracts/client.ts
 
+BUILD_PLAN.md

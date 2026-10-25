@@ -1,3 +1,5 @@
+import type { Passkey } from "./passkey";
+
 /**
  * A typed wrapper around localStorage largely borrowed from (but less capable
  * than) https://www.npmjs.com/package/typed-local-store
@@ -12,6 +14,7 @@
  */
 type Schema = {
   walletId: string;
+  passkey: Passkey;
 };
 
 /**

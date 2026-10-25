@@ -2,10 +2,8 @@
 
 import React from "react";
 import { Layout } from "@stellar/design-system";
-import { getContract } from "../contracts/client";
+import { getRegistry } from "../contracts/client";
 import { useWallet } from "../hooks/useWallet";
-import { useAuth } from "../hooks/useAuth";
-import AuthPanel from "../components/AuthPanel";
 
 /* ---------------------------------- Types --------------------------------- */
 
@@ -49,32 +47,6 @@ const errorToString = (e: unknown): string => {
   }
 };
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
-
-const getStringProp = (obj: Record<string, unknown>, key: string): string | undefined => {
-  const v = obj[key];
-  return typeof v === "string" ? v : undefined;
-};
-
-/** Extract a wallet public key / address from several possible shapes */
-const extractPublicKey = (wallet: unknown): string | undefined => {
-  if (!isRecord(wallet)) return undefined;
-  const direct =
-    getStringProp(wallet, "publicKey") ??
-    getStringProp(wallet, "address") ??
-    getStringProp(wallet, "accountId");
-  if (direct) return direct;
-
-  const account = isRecord(wallet["account"]) ? (wallet["account"] as Record<string, unknown>) : undefined;
-  const accountPk = account ? getStringProp(account, "publicKey") : undefined;
-  if (accountPk) return accountPk;
-
-  const session = isRecord(wallet["session"]) ? (wallet["session"] as Record<string, unknown>) : undefined;
-  const sessionPk = session ? getStringProp(session, "publicKey") : undefined;
-  return sessionPk;
-};
-
 /** Clamp to u32 for Soroban spec (0..2^32-1) */
 const toU32 = (n: number): number => {
   const x = Math.floor(Number.isFinite(n) ? n : 0);
@@ -94,10 +66,19 @@ const initialSeed: FermentationProduct[] = [
     startDate: "2024-01-15",
     currentState: "active",
     progress: 65,
-    metadata: { ingredients: "Flour, Water", temperature: "22°C", notes: "Daily feeding schedule" },
+    metadata: {
+      ingredients: "Flour, Water",
+      temperature: "22°C",
+      notes: "Daily feeding schedule",
+    },
     progressLog: [
       { id: uid(), date: "2024-01-15", state: "Started", notes: "Initial mix" },
-      { id: uid(), date: "2024-01-18", state: "First bubbles", notes: "Activity detected" },
+      {
+        id: uid(),
+        date: "2024-01-18",
+        state: "First bubbles",
+        notes: "Activity detected",
+      },
     ],
     minted: false,
   },
@@ -109,10 +90,24 @@ const initialSeed: FermentationProduct[] = [
     startDate: "2024-01-20",
     currentState: "monitoring",
     progress: 85,
-    metadata: { ingredients: "Cabbage, Gochugaru, Salt, Garlic", temperature: "18°C", notes: "Extra spicy batch" },
+    metadata: {
+      ingredients: "Cabbage, Gochugaru, Salt, Garlic",
+      temperature: "18°C",
+      notes: "Extra spicy batch",
+    },
     progressLog: [
-      { id: uid(), date: "2024-01-20", state: "Started", notes: "Salted and packed" },
-      { id: uid(), date: "2024-01-23", state: "Active fermentation", notes: "Strong sour smell" },
+      {
+        id: uid(),
+        date: "2024-01-20",
+        state: "Started",
+        notes: "Salted and packed",
+      },
+      {
+        id: uid(),
+        date: "2024-01-23",
+        state: "Active fermentation",
+        notes: "Strong sour smell",
+      },
     ],
     minted: false,
   },
@@ -123,35 +118,27 @@ const initialSeed: FermentationProduct[] = [
 const LS_KEY = "fermentation.products.v1";
 
 const Home: React.FC = () => {
-  const { user, token } = useAuth();
-  const wallet = useWallet();
-  const walletPublicKey = extractPublicKey(wallet);
-  const isConnected = typeof walletPublicKey === "string" && walletPublicKey.length > 0;
+  const { address: walletPublicKey, signTransaction } = useWallet();
+  const isConnected = !!walletPublicKey;
 
-  const [products, setProducts] = React.useState<FermentationProduct[]>(initialSeed);
+  const [products, setProducts] =
+    React.useState<FermentationProduct[]>(initialSeed);
   const [openId, setOpenId] = React.useState<string | null>(null);
   const [isAdding, setIsAdding] = React.useState(false);
   const [mintOnAdd, setMintOnAdd] = React.useState(true);
-  const [newProduct, setNewProduct] = React.useState({ name: "", type: "", ingredients: "", temperature: "", notes: "" });
+  const [newProduct, setNewProduct] = React.useState({
+    name: "",
+    type: "",
+    ingredients: "",
+    temperature: "",
+    notes: "",
+  });
 
-  // One contract instance
-  const contract = React.useMemo(() => getContract(), []);
-
-  // Ensure minter role (quietly) after login
-  React.useEffect(() => {
-    const doGrant = async () => {
-      if (!token || !user?.wallet) return;
-      try {
-        await fetch("/api/roles/grant-minter", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        });
-      } catch (e) {
-        console.warn("grant-minter failed (maybe already granted):", e);
-      }
-    };
-    void doGrant();
-  }, [token, user?.wallet]);
+  // Contract client bound to the connected wallet (read-only when disconnected)
+  const contract = React.useMemo(
+    () => getRegistry({ publicKey: walletPublicKey, signTransaction }),
+    [walletPublicKey, signTransaction],
+  );
 
   // Hydrate from localStorage
   React.useEffect(() => {
@@ -161,46 +148,55 @@ const Home: React.FC = () => {
         const parsed = JSON.parse(raw) as FermentationProduct[];
         if (Array.isArray(parsed)) setProducts(parsed);
       }
-    } catch {}
+    } catch {
+      /* ignore corrupt local storage */
+    }
   }, []);
 
   // Persist to localStorage
   React.useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(products));
-    } catch {}
+    } catch {
+      /* storage may be unavailable */
+    }
   }, [products]);
 
-  // Verify on-chain ownership using owner_of().result
+  // Verify on-chain ownership with owner_of; only write state when something changed
+  const tokenIds = products.map((p) => p.tokenId).join(",");
   React.useEffect(() => {
+    if (!walletPublicKey) return;
+    let cancelled = false;
     const verify = async () => {
-      if (!isConnected) return;
-      if (typeof (contract as any).owner_of !== "function") return;
-
-      const updated = await Promise.all(
+      const owned = new Map<number, boolean>();
+      await Promise.all(
         products.map(async (p) => {
           try {
-            const tx = await (contract as any).owner_of({ token_id: p.tokenId });
-            const res = tx?.result as unknown;
-            let ownerStr: string | undefined;
-            if (typeof res === "string") ownerStr = res;
-            else if (isRecord(res)) {
-              ownerStr =
-                getStringProp(res, "address") ??
-                getStringProp(res, "accountId") ??
-                getStringProp(res, "publicKey");
-            }
-            const stillOwned = !!ownerStr && ownerStr === walletPublicKey;
-            return { ...p, minted: stillOwned ? true : p.minted ?? false };
+            const { result } = await contract.owner_of({ token_id: p.tokenId });
+            owned.set(p.tokenId, result === walletPublicKey);
           } catch {
-            return p;
+            /* token does not exist on chain */
           }
         }),
       );
-      setProducts(updated);
+      if (cancelled) return;
+      setProducts((prev) => {
+        let changed = false;
+        const next = prev.map((p) => {
+          const minted = owned.get(p.tokenId);
+          if (minted === undefined || minted === (p.minted ?? false)) return p;
+          changed = true;
+          return { ...p, minted };
+        });
+        return changed ? next : prev;
+      });
     };
     void verify();
-  }, [isConnected, walletPublicKey, products, contract]);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-check when the set of tokens or the wallet changes
+  }, [walletPublicKey, tokenIds, contract]);
 
   /* ---------------------------- On-chain operations --------------------------- */
 
@@ -210,22 +206,19 @@ const Home: React.FC = () => {
       return;
     }
     try {
-      const tx = await (contract as any).mint({
+      const tx = await contract.mint({
         to: walletPublicKey,
         token_id: p.tokenId,
         caller: walletPublicKey,
       });
       await tx.signAndSend();
-      setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, minted: true } : x)));
+      setProducts((prev) =>
+        prev.map((x) => (x.id === p.id ? { ...x, minted: true } : x)),
+      );
     } catch (err) {
       console.error(err);
       alert(`Mint failed: ${errorToString(err)}`);
     }
-  };
-
-  // No-op: current ABI doesn’t expose a metadata setter
-  const updateOnChainMetadata = async (_p: FermentationProduct) => {
-    return;
   };
 
   /** P1→P2: burn P1 then mint P2 */
@@ -239,8 +232,8 @@ const Home: React.FC = () => {
 
     try {
       // Burn P1 if minted
-      if (current.minted && typeof (contract as any).burn === "function") {
-        const burnTx = await (contract as any).burn({
+      if (current.minted) {
+        const burnTx = await contract.burn({
           from: walletPublicKey,
           token_id: current.tokenId,
         });
@@ -255,19 +248,26 @@ const Home: React.FC = () => {
         progress: 100,
         progressLog: [
           ...current.progressLog,
-          { id: uid(), date: todayISO(), state: "Transformed to P2 (ready)", notes: "Fermentation completed" },
+          {
+            id: uid(),
+            date: todayISO(),
+            state: "Transformed to P2 (ready)",
+            notes: "Fermentation completed",
+          },
         ],
         minted: false,
       };
 
-      const mint2 = await (contract as any).mint({
+      const mint2 = await contract.mint({
         to: walletPublicKey,
         token_id: p2.tokenId,
         caller: walletPublicKey,
       });
       await mint2.signAndSend();
 
-      setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p2, minted: true } : p)));
+      setProducts((prev) =>
+        prev.map((p) => (p.id === productId ? { ...p2, minted: true } : p)),
+      );
       alert("🎉 Transformed: P1 burned and P2 minted.");
     } catch (err) {
       console.error(err);
@@ -293,12 +293,25 @@ const Home: React.FC = () => {
         temperature: newProduct.temperature.trim(),
         notes: newProduct.notes.trim(),
       },
-      progressLog: [{ id: uid(), date: todayISO(), state: "Started", notes: "Initial fermentation setup" }],
+      progressLog: [
+        {
+          id: uid(),
+          date: todayISO(),
+          state: "Started",
+          notes: "Initial fermentation setup",
+        },
+      ],
       minted: false,
     };
 
     setProducts((prev) => [...prev, prod]);
-    setNewProduct({ name: "", type: "", ingredients: "", temperature: "", notes: "" });
+    setNewProduct({
+      name: "",
+      type: "",
+      ingredients: "",
+      temperature: "",
+      notes: "",
+    });
     setIsAdding(false);
 
     if (mintOnAdd) {
@@ -306,24 +319,33 @@ const Home: React.FC = () => {
     }
   };
 
-  const updateProgress = async (productId: string, newProgress: number, notes: string) => {
-    let updated: FermentationProduct | undefined;
+  const updateProgress = (
+    productId: string,
+    newProgress: number,
+    notes: string,
+  ) => {
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
         const pct = Math.max(0, Math.min(100, newProgress));
-        const s: FermentationState = pct >= 100 ? "ready" : pct >= 50 ? "monitoring" : "active";
-        updated = {
+        const s: FermentationState =
+          pct >= 100 ? "ready" : pct >= 50 ? "monitoring" : "active";
+        return {
           ...p,
           progress: pct,
           currentState: s,
-          progressLog: [...p.progressLog, { id: uid(), date: todayISO(), state: `Progress: ${pct}%`, notes: notes || "" }],
+          progressLog: [
+            ...p.progressLog,
+            {
+              id: uid(),
+              date: todayISO(),
+              state: `Progress: ${pct}%`,
+              notes: notes || "",
+            },
+          ],
         };
-        return updated!;
       }),
     );
-
-    if (updated && updated.minted) await updateOnChainMetadata(updated);
   };
 
   /* ---------------------------------- Render --------------------------------- */
@@ -332,20 +354,29 @@ const Home: React.FC = () => {
     <Layout.Content>
       <Layout.Inset>
         {/* Top bar with logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-          <img src="/logo.png" alt="Fermentation Tracker logo" width={36} height={36} style={{ display: "block", borderRadius: 8 }} />
-          <h1 style={{ margin: 0 }}>Fermentation Tracker</h1>
-        </div>
-
-        {/* Auth panel (login / signup) */}
-        <div style={{ marginBottom: 16 }}>
-          <AuthPanel />
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <img
+            src="/logo.png"
+            alt="Fermento logo"
+            width={36}
+            height={36}
+            style={{ display: "block", borderRadius: 8 }}
+          />
+          <h1 style={{ margin: 0 }}>Fermento</h1>
         </div>
 
         {/* Intro */}
         <div style={{ display: "grid", gap: 12, marginBottom: 24 }}>
           <p style={{ color: "#6b7280" }}>
-            Track fermentation from P1 to P2. You can mint an NFT when you add a product, update its progress, and on completion burn P1 and mint P2.
+            Track fermentation from P1 to P2. You can mint an NFT when you add a
+            product, update its progress, and on completion burn P1 and mint P2.
           </p>
           {!isConnected && (
             <p style={{ color: "#9ca3af", fontStyle: "italic", marginTop: -8 }}>
@@ -355,15 +386,42 @@ const Home: React.FC = () => {
         </div>
 
         {/* Add Product */}
-        <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff", marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            padding: 16,
+            background: "#fff",
+            marginBottom: 16,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
             <h2 style={{ margin: 0, fontSize: 18 }}>Register New Product</h2>
             <button
               type="button"
               style={
                 isAdding
-                  ? { borderRadius: 10, padding: "8px 12px", border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer" }
-                  : { borderRadius: 10, padding: "8px 12px", border: "1px solid #1f6feb", background: "#1f6feb", color: "#fff", cursor: "pointer" }
+                  ? {
+                      borderRadius: 10,
+                      padding: "8px 12px",
+                      border: "1px solid #e5e7eb",
+                      background: "#fff",
+                      cursor: "pointer",
+                    }
+                  : {
+                      borderRadius: 10,
+                      padding: "8px 12px",
+                      border: "1px solid #1f6feb",
+                      background: "#1f6feb",
+                      color: "#fff",
+                      cursor: "pointer",
+                    }
               }
               onClick={() => setIsAdding((s) => !s)}
             >
@@ -373,16 +431,59 @@ const Home: React.FC = () => {
 
           {isAdding && (
             <>
-              <hr style={{ border: 0, borderTop: "1px solid #f3f4f6", margin: "12px 0" }} />
+              <hr
+                style={{
+                  border: 0,
+                  borderTop: "1px solid #f3f4f6",
+                  margin: "12px 0",
+                }}
+              />
               <div style={{ display: "grid", gap: 12 }}>
                 <div>
-                  <label style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }} htmlFor="name">Product Name</label>
-                  <input id="name" style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 14 }} value={newProduct.name} onChange={(e) => setNewProduct((p) => ({ ...p, name: e.target.value }))} placeholder="e.g., Sourdough Starter" />
+                  <label
+                    style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}
+                    htmlFor="name"
+                  >
+                    Product Name
+                  </label>
+                  <input
+                    id="name"
+                    style={{
+                      width: "100%",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                    }}
+                    value={newProduct.name}
+                    onChange={(e) =>
+                      setNewProduct((p) => ({ ...p, name: e.target.value }))
+                    }
+                    placeholder="e.g., Sourdough Starter"
+                  />
                 </div>
 
                 <div>
-                  <label style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }} htmlFor="type">Type</label>
-                  <select id="type" style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 14 }} value={newProduct.type} onChange={(e) => setNewProduct((p) => ({ ...p, type: e.target.value }))}>
+                  <label
+                    style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}
+                    htmlFor="type"
+                  >
+                    Type
+                  </label>
+                  <select
+                    id="type"
+                    style={{
+                      width: "100%",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                    }}
+                    value={newProduct.type}
+                    onChange={(e) =>
+                      setNewProduct((p) => ({ ...p, type: e.target.value }))
+                    }
+                  >
                     <option value="">Select type</option>
                     <option value="Bread">Bread</option>
                     <option value="Vegetable">Vegetable</option>
@@ -393,27 +494,122 @@ const Home: React.FC = () => {
                 </div>
 
                 <div>
-                  <label style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }} htmlFor="ingredients">Ingredients</label>
-                  <input id="ingredients" style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 14 }} value={newProduct.ingredients} onChange={(e) => setNewProduct((p) => ({ ...p, ingredients: e.target.value }))} placeholder="Main ingredients" />
+                  <label
+                    style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}
+                    htmlFor="ingredients"
+                  >
+                    Ingredients
+                  </label>
+                  <input
+                    id="ingredients"
+                    style={{
+                      width: "100%",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                    }}
+                    value={newProduct.ingredients}
+                    onChange={(e) =>
+                      setNewProduct((p) => ({
+                        ...p,
+                        ingredients: e.target.value,
+                      }))
+                    }
+                    placeholder="Main ingredients"
+                  />
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 12,
+                  }}
+                >
                   <div>
-                    <label style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }} htmlFor="temperature">Temperature</label>
-                    <input id="temperature" style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 14 }} value={newProduct.temperature} onChange={(e) => setNewProduct((p) => ({ ...p, temperature: e.target.value }))} placeholder="22°C" />
+                    <label
+                      style={{
+                        color: "#6b7280",
+                        fontSize: 12,
+                        fontWeight: 500,
+                      }}
+                      htmlFor="temperature"
+                    >
+                      Temperature
+                    </label>
+                    <input
+                      id="temperature"
+                      style={{
+                        width: "100%",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 8,
+                        padding: "8px 10px",
+                        fontSize: 14,
+                      }}
+                      value={newProduct.temperature}
+                      onChange={(e) =>
+                        setNewProduct((p) => ({
+                          ...p,
+                          temperature: e.target.value,
+                        }))
+                      }
+                      placeholder="22°C"
+                    />
                   </div>
                   <div>
-                    <label style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }} htmlFor="notes">Notes</label>
-                    <input id="notes" style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 8, padding: "8px 10px", fontSize: 14 }} value={newProduct.notes} onChange={(e) => setNewProduct((p) => ({ ...p, notes: e.target.value }))} placeholder="Free text notes" />
+                    <label
+                      style={{
+                        color: "#6b7280",
+                        fontSize: 12,
+                        fontWeight: 500,
+                      }}
+                      htmlFor="notes"
+                    >
+                      Notes
+                    </label>
+                    <input
+                      id="notes"
+                      style={{
+                        width: "100%",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 8,
+                        padding: "8px 10px",
+                        fontSize: 14,
+                      }}
+                      value={newProduct.notes}
+                      onChange={(e) =>
+                        setNewProduct((p) => ({ ...p, notes: e.target.value }))
+                      }
+                      placeholder="Free text notes"
+                    />
                   </div>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input id="mintOnAdd" type="checkbox" checked={mintOnAdd} onChange={(e) => setMintOnAdd(e.target.checked)} />
-                  <label htmlFor="mintOnAdd" style={{ fontSize: 14 }}>Mint NFT on add</label>
+                  <input
+                    id="mintOnAdd"
+                    type="checkbox"
+                    checked={mintOnAdd}
+                    onChange={(e) => setMintOnAdd(e.target.checked)}
+                  />
+                  <label htmlFor="mintOnAdd" style={{ fontSize: 14 }}>
+                    Mint NFT on add
+                  </label>
                 </div>
 
-                <button type="button" onClick={() => void addProduct()} style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #1f6feb", background: "#1f6feb", color: "#fff", cursor: "pointer" }}>
+                <button
+                  type="button"
+                  onClick={() => void addProduct()}
+                  style={{
+                    borderRadius: 10,
+                    padding: "8px 12px",
+                    border: "1px solid #1f6feb",
+                    background: "#1f6feb",
+                    color: "#fff",
+                    cursor: "pointer",
+                  }}
+                >
                   Register Product{mintOnAdd ? " & Mint P1" : ""}
                 </button>
               </div>
@@ -426,15 +622,45 @@ const Home: React.FC = () => {
           {products.map((product) => {
             const open = openId === product.id;
             return (
-              <section key={product.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff" }} aria-label={product.name}>
-                <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <section
+                key={product.id}
+                style={{
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 12,
+                  padding: 16,
+                  background: "#fff",
+                }}
+                aria-label={product.name}
+              >
+                <header
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
                   <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <h3 style={{ margin: 0, fontSize: 16 }}>{product.name}</h3>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <h3 style={{ margin: 0, fontSize: 16 }}>
+                        {product.name}
+                      </h3>
                       <span
                         style={{
-                          background: product.currentState === "active" ? "#e6f0ff" : product.currentState === "monitoring" ? "#fff7e6" : "#e6fffb",
-                          color: product.currentState === "active" ? "#003a8c" : product.currentState === "monitoring" ? "#ad4e00" : "#006d75",
+                          background:
+                            product.currentState === "active"
+                              ? "#e6f0ff"
+                              : product.currentState === "monitoring"
+                                ? "#fff7e6"
+                                : "#e6fffb",
+                          color:
+                            product.currentState === "active"
+                              ? "#003a8c"
+                              : product.currentState === "monitoring"
+                                ? "#ad4e00"
+                                : "#006d75",
                           borderRadius: 999,
                           padding: "2px 8px",
                           fontSize: 12,
@@ -447,45 +673,218 @@ const Home: React.FC = () => {
                       </span>
                     </div>
                     <div style={{ color: "#6b7280", fontSize: 12 }}>
-                      {product.type} • Started {product.startDate} • token #{product.tokenId} {product.minted ? "• on-chain" : "• local"}
+                      {product.type} • Started {product.startDate} • token #
+                      {product.tokenId}{" "}
+                      {product.minted ? "• on-chain" : "• local"}
                     </div>
                   </div>
-                  <button type="button" style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer" }} onClick={() => setOpenId(open ? null : product.id)}>
+                  <button
+                    type="button"
+                    style={{
+                      borderRadius: 10,
+                      padding: "8px 12px",
+                      border: "1px solid #e5e7eb",
+                      background: "#fff",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setOpenId(open ? null : product.id)}
+                  >
                     {open ? "Hide" : "View Details & Update Progress"}
                   </button>
                 </header>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#374151" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: 12,
+                      color: "#374151",
+                    }}
+                  >
                     <span>Progress</span>
                     <span>{product.progress}%</span>
                   </div>
-                  <div style={{ width: "100%", height: 8, borderRadius: 999, background: "#f3f4f6", overflow: "hidden" }} role="progressbar" aria-valuenow={product.progress} aria-valuemin={0} aria-valuemax={100}>
-                    <div style={{ width: `${Math.min(100, Math.max(0, product.progress))}%`, height: "100%", background: "#1f6feb" }} />
+                  <div
+                    style={{
+                      width: "100%",
+                      height: 8,
+                      borderRadius: 999,
+                      background: "#f3f4f6",
+                      overflow: "hidden",
+                    }}
+                    role="progressbar"
+                    aria-valuenow={product.progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, product.progress))}%`,
+                        height: "100%",
+                        background: "#1f6feb",
+                      }}
+                    />
                   </div>
                 </div>
 
                 {open && (
                   <>
-                    <hr style={{ border: 0, borderTop: "1px solid #f3f4f6", margin: "12px 0" }} />
+                    <hr
+                      style={{
+                        border: 0,
+                        borderTop: "1px solid #f3f4f6",
+                        margin: "12px 0",
+                      }}
+                    />
                     <div style={{ display: "grid", gap: 16 }}>
                       {/* Details */}
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                        <div><div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}>Type</div><div>{product.type}</div></div>
-                        <div><div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}>Started</div><div>{product.startDate}</div></div>
-                        <div><div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}>Temperature</div><div>{product.metadata.temperature}</div></div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                          gap: 12,
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              color: "#6b7280",
+                              fontSize: 12,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Type
+                          </div>
+                          <div>{product.type}</div>
+                        </div>
+                        <div>
+                          <div
+                            style={{
+                              color: "#6b7280",
+                              fontSize: 12,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Started
+                          </div>
+                          <div>{product.startDate}</div>
+                        </div>
+                        <div>
+                          <div
+                            style={{
+                              color: "#6b7280",
+                              fontSize: 12,
+                              fontWeight: 500,
+                            }}
+                          >
+                            Temperature
+                          </div>
+                          <div>{product.metadata.temperature}</div>
+                        </div>
                       </div>
 
-                      <div><div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}>Ingredients</div><div style={{ fontSize: 14 }}>{product.metadata.ingredients}</div></div>
-                      <div><div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500 }}>Notes</div><div style={{ fontSize: 14 }}>{product.metadata.notes}</div></div>
+                      <div>
+                        <div
+                          style={{
+                            color: "#6b7280",
+                            fontSize: 12,
+                            fontWeight: 500,
+                          }}
+                        >
+                          Ingredients
+                        </div>
+                        <div style={{ fontSize: 14 }}>
+                          {product.metadata.ingredients}
+                        </div>
+                      </div>
+                      <div>
+                        <div
+                          style={{
+                            color: "#6b7280",
+                            fontSize: 12,
+                            fontWeight: 500,
+                          }}
+                        >
+                          Notes
+                        </div>
+                        <div style={{ fontSize: 14 }}>
+                          {product.metadata.notes}
+                        </div>
+                      </div>
 
                       {/* Progress Controls */}
                       <div>
-                        <div style={{ color: "#6b7280", fontSize: 12, fontWeight: 500, marginBottom: 8 }}>Update Progress</div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button type="button" style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer" }} onClick={() => void updateProgress(product.id, product.progress + 10, "Progress update")}>+10%</button>
-                          <button type="button" style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer" }} onClick={() => void updateProgress(product.id, product.progress + 25, "Significant progress")}>+25%</button>
-                          <button type="button" style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer" }} onClick={() => void updateProgress(product.id, 100, "Fermentation complete")}>Complete</button>
+                        <div
+                          style={{
+                            color: "#6b7280",
+                            fontSize: 12,
+                            fontWeight: 500,
+                            marginBottom: 8,
+                          }}
+                        >
+                          Update Progress
+                        </div>
+                        <div
+                          style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
+                        >
+                          <button
+                            type="button"
+                            style={{
+                              borderRadius: 10,
+                              padding: "8px 12px",
+                              border: "1px solid #e5e7eb",
+                              background: "#fff",
+                              cursor: "pointer",
+                            }}
+                            onClick={() =>
+                              updateProgress(
+                                product.id,
+                                product.progress + 10,
+                                "Progress update",
+                              )
+                            }
+                          >
+                            +10%
+                          </button>
+                          <button
+                            type="button"
+                            style={{
+                              borderRadius: 10,
+                              padding: "8px 12px",
+                              border: "1px solid #e5e7eb",
+                              background: "#fff",
+                              cursor: "pointer",
+                            }}
+                            onClick={() =>
+                              updateProgress(
+                                product.id,
+                                product.progress + 25,
+                                "Significant progress",
+                              )
+                            }
+                          >
+                            +25%
+                          </button>
+                          <button
+                            type="button"
+                            style={{
+                              borderRadius: 10,
+                              padding: "8px 12px",
+                              border: "1px solid #e5e7eb",
+                              background: "#fff",
+                              cursor: "pointer",
+                            }}
+                            onClick={() =>
+                              updateProgress(
+                                product.id,
+                                100,
+                                "Fermentation complete",
+                              )
+                            }
+                          >
+                            Complete
+                          </button>
                         </div>
                       </div>
 
@@ -494,7 +893,14 @@ const Home: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => void transformProduct(product.id)}
-                          style={{ borderRadius: 10, padding: "8px 12px", border: "1px solid #1f6feb", background: "#1f6feb", color: "#fff", cursor: "pointer" }}
+                          style={{
+                            borderRadius: 10,
+                            padding: "8px 12px",
+                            border: "1px solid #1f6feb",
+                            background: "#1f6feb",
+                            color: "#fff",
+                            cursor: "pointer",
+                          }}
                           title="Burn P1 and mint P2"
                         >
                           Transform Product (P1 → P2)
@@ -508,9 +914,21 @@ const Home: React.FC = () => {
           })}
 
           {products.length === 0 && (
-            <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, background: "#fff", textAlign: "center" }}>
-              <div style={{ color: "#6b7280", marginBottom: 4 }}>No fermentations yet</div>
-              <div style={{ color: "#6b7280", fontSize: 12 }}>Register your first product to get started</div>
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 16,
+                background: "#fff",
+                textAlign: "center",
+              }}
+            >
+              <div style={{ color: "#6b7280", marginBottom: 4 }}>
+                No fermentations yet
+              </div>
+              <div style={{ color: "#6b7280", fontSize: 12 }}>
+                Register your first product to get started
+              </div>
             </div>
           )}
         </div>

@@ -1,0 +1,16 @@
+/* Wallet.css: pseudo-class rules that inline styles cannot express */
+.wallet a {
+  color: #c8341e;
+}
+.wallet a:hover {
+  color: #2b1b3d;
+}
+.wallet a.wallet-row {
+  color: #2b1b3d;
+}
+.wallet a.wallet-row:hover {
+  color: #c8341e;
+}
+.wallet input::placeholder {
+  color: rgba(200, 52, 30, 0.4);
+}

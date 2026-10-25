@@ -7,43 +7,41 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  PKG_CONFIG_PATH: /usr/lib/pkgconfig
-  PUBLIC_STELLAR_NETWORK: local
+  PUBLIC_STELLAR_NETWORK: TESTNET
+  PUBLIC_STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+  PUBLIC_STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+  PUBLIC_STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
 
 jobs:
-  build:
+  contracts:
+    name: Soroban contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
-            runner/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: rustup target add wasm32v1-none
-      - uses: stellar/quickstart@main
+      # rust-toolchain.toml pins the version and adds the wasm32v1-none target.
+      - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
+
+  web:
+    name: Web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          tag: testing
-      - run: sudo apt-get update && sudo apt-get install -y libudev-dev libdbus-1-dev pkg-config
-      - name: Check for stellar-scaffold binary
-        run: |
-          if ! command -v stellar-scaffold &> /dev/null; then
-            echo "stellar-scaffold not found, installing..."
-            cargo install --git https://github.com/ahalabs/scaffold-stellar --branch main stellar-scaffold-cli
-          else
-            echo "stellar-scaffold already installed. Clear cache to force reinstall."
-          fi
-      - name: Build clients before building the project
-        run: STELLAR_SCAFFOLD_ENV=development stellar-scaffold build --build-clients
+          node-version: 22
+          cache: npm
       - run: npm ci
-      - run: npm run install:contracts
+      # Generated clients are committed as TypeScript; build them before the app.
+      - run: npm run build:clients
       - run: npm run build
       - run: npm run lint
       - run: npx prettier . --check
-      - name: Run tests
-        run: npm test --if-present

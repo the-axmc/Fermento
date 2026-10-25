@@ -4,3 +4,4 @@ build
 .husky
 package-lock.json
 contracts/**/test_snapshots/**
+packages/*/src/
