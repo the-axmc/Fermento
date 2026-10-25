@@ -3,6 +3,7 @@ import type { Offering } from "batch_shares_contract";
 import type { Mark } from "condition_oracle_contract";
 import { SHARES_ID } from "../contracts/client";
 import type { BatchInfo } from "../data/batches";
+import { cachedPrivateShares } from "../lib/confidential";
 import { readBalance } from "../wallet/balances";
 import { useAccount } from "./useAccount";
 import { useBatchesChain } from "./useBatchChain";
@@ -13,6 +14,8 @@ export interface Holding {
   offering: Offering;
   mark?: Mark;
   shares: bigint;
+  /** Shares hidden in the batch's confidential wrapper, as last synced here. */
+  privateShares: bigint;
   /** Mark per share, or the fill price when no mark exists. */
   price: bigint;
 }
@@ -57,7 +60,12 @@ export const useHoldings = () => {
 
   const holdings: Holding[] = catalogue.flatMap((info) => {
     const row = chain.rows[info.batchId];
-    const shares = balances[info.batchId] ?? 0n;
+    const publicShares = balances[info.batchId] ?? 0n;
+    const privateShares =
+      info.confidentialToken && account.address
+        ? cachedPrivateShares(info.confidentialToken, account.address)
+        : 0n;
+    const shares = publicShares + privateShares;
     if (!row?.offering || shares === 0n) return [];
     return [
       {
@@ -65,6 +73,7 @@ export const useHoldings = () => {
         offering: row.offering,
         mark: row.mark,
         shares,
+        privateShares,
         price: row.mark?.value ?? row.offering.price,
       },
     ];

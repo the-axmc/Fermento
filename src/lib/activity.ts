@@ -13,7 +13,8 @@ export type ActivityKind =
   | "send"
   | "checkin"
   | "tag"
-  | "listing";
+  | "listing"
+  | "privacy";
 
 export interface Activity {
   id: string;

@@ -39,6 +39,8 @@ export interface BatchInfo {
   producerAddress?: string;
   /** False for ferments the producer only tracks: registered, never offered. */
   onSale?: boolean;
+  /** Confidential wrapper of the share token, when the batch has one. */
+  confidentialToken?: string;
   /* Artwork */
   glass: string;
   cap: string;
@@ -61,6 +63,8 @@ export const batches: BatchInfo[] = [
     region: "Setúbal, Portugal",
     category: "Moscatel de Setúbal · fortified",
     unit: "bottle",
+    confidentialToken:
+      "CD6LRJ3HQKWTLYMKTFQWSCH6FEZM636JFK54534QR3WUMBISRJZQBZ5J",
     glass: "#2B1B3D",
     cap: "#F7A8C8",
     labelColor: "#F5B82E",

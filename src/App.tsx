@@ -7,6 +7,7 @@ import Claim from "./pages/Claim";
 import Manage from "./pages/Manage";
 import Market from "./pages/Market";
 import Portfolio from "./pages/Portfolio";
+import PrivacyCheck from "./pages/PrivacyCheck";
 import Producer from "./pages/Producer";
 import ProducerEdit from "./pages/ProducerEdit";
 import SignIn from "./pages/SignIn";
@@ -40,6 +41,7 @@ function App() {
         <Route path="/producer/edit" element={<ProducerEdit />} />
         <Route path="/producer/:slug" element={<Producer />} />
         <Route path="/certify" element={<Certify />} />
+        <Route path="/privacy-check" element={<PrivacyCheck />} />
         <Route path="/cask/:id" element={<LegacyCask />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/wallet" element={<Wallet />} />

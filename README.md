@@ -133,6 +133,41 @@ from localhost when it is unset. The keeper runs every `KEEPER_MINUTES`
 Profiles and applications live in `deploy/producers.json` and
 `deploy/uploads/` (git-ignored).
 
+### Private shares (confidential tokens, developer preview)
+
+Every batch listed for sale also gets a **confidential wrapper**: an
+OpenZeppelin confidential token over the batch's share asset. A holder can
+move shares into it from the batch page ("Keep private"), send them to another
+holder privately, and withdraw them before redeeming. On chain the wrapper
+holds Pedersen commitments; the amounts are decrypted only on the holder's
+phone. Sender and recipient addresses stay public. Fermento holds the auditor
+key and can read amounts for compliance.
+
+How it is wired:
+
+- Code: the wrapper instances are deployed from the confidential-token wasm
+  already on testnet (`CONFIDENTIAL_TOKEN_WASM` in `deploy/testnet.env`,
+  kept in `contracts/confidential_token/`), one per batch, by the producer
+  API at listing. The shared UltraHonk verifier is `CONFIDENTIAL_VERIFIER`;
+  Fermento's auditor registry is `CONFIDENTIAL_AUDITOR` with the key generated
+  by `scripts/confidential-auditor.ts` (secret in the git-ignored
+  `deploy/auditor.local.env`).
+- Client: `stellar-confidential-token-sdk` (community client for the
+  OpenZeppelin protocol). Proofs are Noir circuits (`public/circuits/`) run
+  by bb.js in the browser; the smart account signs; the relayer pays.
+  `src/lib/confidential.ts` holds keys, proving and local state;
+  `src/hooks/useConfidential.ts` the actions; `src/components/PrivacyCard.tsx`
+  the UI. `/privacy-check` generates a test proof to see how long a device takes.
+- Keys: passkey accounts have no ed25519 signer, so each account gets a random
+  32-byte privacy root in localStorage, exportable from the card. Losing it
+  loses access to the private balance.
+
+Known limits, stated in the app: OpenZeppelin's verifier does not yet accept
+zero-knowledge proofs, so amounts are hidden from casual observers but not
+from a determined analyst; the contract is a testnet developer preview; the
+RPC keeps about a week of events, so a device that has never synced a balance
+older than that needs the backup state from the device that has.
+
 ### Upgrading on testnet
 
 `scripts/upgrade-testnet.sh <admin> [registry|oracle|shares]` uploads only the

@@ -26,7 +26,12 @@
     "paths": {
       "batch_registry_contract": ["./packages/batch_registry_contract/dist"],
       "batch_shares_contract": ["./packages/batch_shares_contract/dist"],
-      "condition_oracle_contract": ["./packages/condition_oracle_contract/dist"]
+      "condition_oracle_contract": [
+        "./packages/condition_oracle_contract/dist"
+      ],
+      "confidential_token_contract": [
+        "./packages/confidential_token_contract/dist"
+      ]
     }
   },
   "include": ["src"]
