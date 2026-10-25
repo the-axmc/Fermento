@@ -37,6 +37,8 @@ export interface BatchInfo {
   unit: string;
   /** Account that receives sales, set for batches listed through the producer API. */
   producerAddress?: string;
+  /** False for ferments the producer only tracks: registered, never offered. */
+  onSale?: boolean;
   /* Artwork */
   glass: string;
   cap: string;

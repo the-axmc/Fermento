@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import FermentIcon from "../components/FermentIcons";
 import type { Kind } from "../data/batches";
 import { useAccount } from "../hooks/useAccount";
+import { useProducer } from "../hooks/useProducer";
 
 /* ---------------------------------- Theme --------------------------------- */
 
@@ -38,6 +39,8 @@ const KINDS: { kind: Kind; label: string; tile: string; text?: string }[] = [
 
 interface Draft {
   kind: Kind;
+  /** "sale" opens a primary offering; "track" only registers the batch. */
+  listing: "sale" | "track";
   name: string;
   description: string;
   producer: string;
@@ -50,6 +53,7 @@ interface Draft {
 
 const empty: Draft = {
   kind: "kombucha",
+  listing: "sale",
   name: "",
   description: "",
   producer: "",
@@ -127,6 +131,13 @@ const AddFerment: React.FC = () => {
   const navigate = useNavigate();
   const account = useAccount();
   const [d, setD] = React.useState<Draft>(loadDraft);
+  const { producer } = useProducer(account.address);
+  // A producer with a page lists under that name.
+  React.useEffect(() => {
+    if (producer && producer.address === account.address) {
+      setD((p) => (p.producer ? p : { ...p, producer: producer.name }));
+    }
+  }, [producer, account.address]);
   const [busy, setBusy] = React.useState<"locate" | "list" | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState(false);
@@ -210,6 +221,7 @@ const AddFerment: React.FC = () => {
         },
         body: JSON.stringify({
           kind: d.kind,
+          listing: d.listing,
           name: d.name.trim(),
           description: d.description.trim(),
           origin: d.origin.trim(),
@@ -226,7 +238,8 @@ const AddFerment: React.FC = () => {
         throw new Error(body.error ?? `Listing failed (${r.status})`);
       }
       localStorage.removeItem(DRAFT_KEY);
-      navigate(`/batch/${body.batchId}`);
+      // Straight to the producer's own page for the batch: link the card, post the first check-in.
+      navigate(`/batch/${body.batchId}/manage`);
     } catch (err) {
       setError(
         err instanceof Error && err.message.includes("Failed to fetch")
@@ -552,6 +565,58 @@ const AddFerment: React.FC = () => {
             </div>
           </Field>
 
+          <Field
+            title="What for"
+            hintText={
+              d.listing === "sale"
+                ? "People buy shares now; you are paid at fill and they redeem units when it's ready."
+                : "Just a numbered batch with an NFC card and check-ins. You can put it on sale later."
+            }
+          >
+            <div
+              role="radiogroup"
+              aria-label="Sell or track"
+              style={{
+                display: "flex",
+                padding: 4,
+                borderRadius: 26,
+                background: "rgba(43, 27, 61, 0.08)",
+              }}
+            >
+              {(
+                [
+                  ["sale", "Put on sale"],
+                  ["track", "Just track it"],
+                ] as const
+              ).map(([v, label]) => {
+                const on = d.listing === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => set("listing", v)}
+                    style={{
+                      flex: 1,
+                      height: 44,
+                      borderRadius: 22,
+                      border: 0,
+                      background: on ? RED : "transparent",
+                      color: on ? CREAM : INK,
+                      fontFamily: SANS,
+                      fontWeight: 800,
+                      fontSize: 15,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+
           <div
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 26 }}
           >
@@ -640,7 +705,11 @@ const AddFerment: React.FC = () => {
               opacity: busy === "list" ? 0.6 : 1,
             }}
           >
-            {busy === "list" ? "Listing on chain…" : "List on the market"}
+            {busy === "list"
+              ? "Registering on chain…"
+              : d.listing === "sale"
+                ? "List on the market"
+                : "Register the batch"}
           </button>
           <button
             type="button"
@@ -666,9 +735,12 @@ const AddFerment: React.FC = () => {
               textAlign: "center",
             }}
           >
-            Listing mints the batch token, registers the cellar sensor, issues
-            the share asset and opens the sale. About a minute on testnet.
-            {account.address ? " Sales are paid to your account." : ""}
+            {d.listing === "sale"
+              ? "Listing mints the batch token, registers the cellar sensor, issues the share asset and opens the sale. About a minute on testnet."
+              : "Registering mints the batch token and the cellar sensor, and names you as its producer. About half a minute on testnet."}
+            {account.address
+              ? " Your account signs the check-ins and the NFC card."
+              : " Sign in first so the batch is yours."}
           </p>
         </div>
       </div>

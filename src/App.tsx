@@ -2,9 +2,13 @@ import { Routes, Route, Outlet, Navigate, useParams } from "react-router-dom";
 import BottomNav from "./components/BottomNav";
 import AddFerment from "./pages/AddFerment";
 import Batch from "./pages/Batch";
+import Certify from "./pages/Certify";
 import Claim from "./pages/Claim";
+import Manage from "./pages/Manage";
 import Market from "./pages/Market";
 import Portfolio from "./pages/Portfolio";
+import Producer from "./pages/Producer";
+import ProducerEdit from "./pages/ProducerEdit";
 import SignIn from "./pages/SignIn";
 import Wallet from "./pages/Wallet";
 
@@ -32,6 +36,10 @@ function App() {
         <Route path="/produce" element={<AddFerment />} />
         <Route path="/market" element={<Market />} />
         <Route path="/batch/:id" element={<Batch />} />
+        <Route path="/batch/:id/manage" element={<Manage />} />
+        <Route path="/producer/edit" element={<ProducerEdit />} />
+        <Route path="/producer/:slug" element={<Producer />} />
+        <Route path="/certify" element={<Certify />} />
         <Route path="/cask/:id" element={<LegacyCask />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/wallet" element={<Wallet />} />

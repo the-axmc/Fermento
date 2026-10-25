@@ -6,7 +6,14 @@
  * buying, redeeming, sending) is appended here, per account, in localStorage.
  */
 
-export type ActivityKind = "funds" | "buy" | "redeem" | "send";
+export type ActivityKind =
+  | "funds"
+  | "buy"
+  | "redeem"
+  | "send"
+  | "checkin"
+  | "tag"
+  | "listing";
 
 export interface Activity {
   id: string;
