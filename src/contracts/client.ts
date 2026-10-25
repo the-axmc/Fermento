@@ -1,31 +1,48 @@
 // src/contracts/client.ts
-import { Client, networks } from "non_fungible_contract";
+//
+// Typed clients for the three Fermento contracts. Contract IDs come from the
+// environment (see .env.example); scripts/deploy-testnet.sh prints them.
 
-const env = (import.meta as any).env || {};
-const RPC = env.PUBLIC_STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-const PASS =
-  env.PUBLIC_STELLAR_NETWORK_PASSPHRASE ||
-  (networks?.testnet?.networkPassphrase as string) ||
-  "Test SDF Network ; September 2015";
-const CONTRACT_ID =
-  env.CONTRACT_ID || (networks?.testnet?.contractId as string);
+import { Client as RegistryClient } from "batch_registry_contract";
+import { Client as SharesClient } from "batch_shares_contract";
+import { Client as OracleClient } from "condition_oracle_contract";
+import type { ClientOptions } from "@stellar/stellar-sdk/contract";
+import { networkPassphrase, rpcUrl } from "./util";
 
-if (!CONTRACT_ID) {
-  // Keep a loud error so you notice in Vercel logs if env is missing
-  // (this throws during SSR build if you ever SSR this page).
-  // For Vite SPA it’s fine at runtime.
-  console.warn("⚠️ CONTRACT_ID is not set; client may fail at runtime.");
+/** Signer for write calls; omit for read-only calls. */
+export type ContractSigner = Pick<
+  ClientOptions,
+  "publicKey" | "signTransaction" | "signAuthEntry"
+>;
+
+export const REGISTRY_ID: string = import.meta.env.PUBLIC_REGISTRY_ID ?? "";
+export const SHARES_ID: string = import.meta.env.PUBLIC_SHARES_ID ?? "";
+export const ORACLE_ID: string = import.meta.env.PUBLIC_ORACLE_ID ?? "";
+export const USDC_ID: string = import.meta.env.PUBLIC_USDC_ID ?? "";
+
+const base = (contractId: string, signer: ContractSigner) => ({
+  contractId,
+  rpcUrl,
+  networkPassphrase,
+  allowHttp: rpcUrl.startsWith("http://"),
+  ...signer,
+});
+
+/** Batch registry: one NFT per physical batch, stages and unit claims. */
+export function getRegistry(signer: ContractSigner = {}): RegistryClient {
+  return new RegistryClient(base(REGISTRY_ID, signer));
 }
 
-let cached: Client | null = null;
-
-export function getContract(): Client {
-  if (cached) return cached;
-  cached = new Client({
-    contractId: CONTRACT_ID,
-    rpcUrl: RPC,
-    networkPassphrase: PASS,
-    allowHttp: RPC.startsWith("http://"),
-  });
-  return cached;
+/** Batch shares: primary sale in USDC, storage fees, redemption. */
+export function getShares(signer: ContractSigner = {}): SharesClient {
+  return new SharesClient(base(SHARES_ID, signer));
 }
+
+/** Condition oracle: signed cellar readings, age curves and the value mark. */
+export function getOracle(signer: ContractSigner = {}): OracleClient {
+  return new OracleClient(base(ORACLE_ID, signer));
+}
+
+/** Kept for code that still refers to the single registry client. */
+export const getContract = getRegistry;
+export const CONTRACT_ID = REGISTRY_ID;

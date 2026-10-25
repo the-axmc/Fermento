@@ -1,0 +1,13 @@
+/* Batch.css: pseudo-class rules that inline styles cannot express */
+.batch a {
+  color: #c8341e;
+}
+.batch a:hover {
+  color: #2b1b3d;
+}
+.batch a.batch-verify {
+  color: #2b1b3d;
+}
+.batch a.batch-verify:hover {
+  color: #c8341e;
+}

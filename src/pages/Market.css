@@ -1,0 +1,16 @@
+/* Market.css: pseudo-class rules that inline styles cannot express */
+.market a {
+  color: #c8341e;
+}
+.market a:hover {
+  color: #2b1b3d;
+}
+.market a.market-item {
+  color: #2b1b3d;
+}
+.market a.market-item:hover .market-item-name {
+  color: #c8341e;
+}
+.market input::placeholder {
+  color: #5e4c66;
+}
