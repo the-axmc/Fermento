@@ -17,6 +17,7 @@ interface ImportMetaEnv {
   readonly PUBLIC_SPENDING_LIMIT_POLICY_ID?: string;
   readonly PUBLIC_RELAYER_URL?: string;
   readonly PUBLIC_NATIVE_TOKEN_ID?: string;
+  readonly PUBLIC_ANCHOR_DOMAIN?: string;
 }
 
 interface ImportMeta {

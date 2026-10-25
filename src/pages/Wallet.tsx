@@ -11,6 +11,15 @@ import { useBalance } from "../hooks/useBalance";
 import { useCatalogue } from "../hooks/useCatalogue";
 import { requestFunds, useTreasury } from "../hooks/useTreasury";
 import { type Activity, recordActivity } from "../lib/activity";
+import {
+  ANCHOR_DOMAIN,
+  FINAL_STATUSES,
+  type AnchorTransaction,
+  type DepositLimits,
+  depositLimits,
+  depositStatus,
+  startDeposit,
+} from "../lib/anchor";
 import { money, shortAddress, shortDate } from "../lib/format";
 import { APP_NAME, getKit } from "../wallet/kit";
 import "./Wallet.css";
@@ -324,12 +333,35 @@ const Wallet: React.FC = () => {
     [catalogue],
   );
 
+  // Card and bank go through the anchor's hosted page (SEP-24).
+  const [limits, setLimits] = React.useState<Record<
+    string,
+    DepositLimits
+  > | null>(null);
+  const [anchorError, setAnchorError] = React.useState<string | null>(null);
+  const [deposit, setDeposit] = React.useState<{
+    url: string;
+    code: string;
+    tx: AnchorTransaction;
+  } | null>(null);
+
   const isEUR = cur === "EUR";
   const sym = isEUR ? "€" : "$";
   const coin = isEUR ? "EURC" : "USDC";
   const value = Number(amount) || 0;
   const amountFixed = value.toFixed(2);
-  const tooLow = value < MIN_AMOUNT;
+  const viaAnchor = method !== "wallet";
+  // The anchor may not issue the coin of the chosen currency (the test
+  // anchor only has USDC): fall back to USDC.
+  const anchorCode = limits?.[coin]?.enabled ? coin : "USDC";
+  const anchorLimits = limits?.[anchorCode];
+  const tooLow = viaAnchor
+    ? value < (anchorLimits?.min_amount ?? 0) || value <= 0
+    : value < MIN_AMOUNT;
+  const tooHigh =
+    viaAnchor &&
+    anchorLimits?.max_amount !== undefined &&
+    value > anchorLimits.max_amount;
 
   const copyAddress = () => {
     if (!address) return;
@@ -339,18 +371,21 @@ const Wallet: React.FC = () => {
     });
   };
 
+  const anchorNote = anchorError
+    ? anchorError
+    : !limits
+      ? `Through ${ANCHOR_DOMAIN}…`
+      : `Through ${ANCHOR_DOMAIN} · ${anchorLimits?.min_amount ?? "?"}–${anchorLimits?.max_amount ?? "?"} ${anchorCode}`;
   const methods = [
     {
       id: "card" as const,
       label: "Card",
-      note: "Visa, Mastercard, Apple Pay",
+      note: `Visa, Mastercard, Apple Pay · ${anchorNote}`,
     },
     {
       id: "bank" as const,
       label: "Bank transfer",
-      note: isEUR
-        ? "SEPA, from your own bank account"
-        : "From your own bank account",
+      note: `${isEUR ? "SEPA" : "Your own bank"} · ${anchorNote}`,
     },
     {
       id: "wallet" as const,
@@ -368,11 +403,90 @@ const Wallet: React.FC = () => {
     setModal(false);
     setFundHash(null);
     setFundError(null);
+    setDeposit(null);
+  };
+
+  // Load the anchor's deposit limits once the sheet opens.
+  React.useEffect(() => {
+    if (!modal || limits) return;
+    let active = true;
+    depositLimits()
+      .then((l) => {
+        if (active) {
+          setLimits(l);
+          setAnchorError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (active)
+          setAnchorError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      active = false;
+    };
+  }, [modal, limits]);
+
+  // Follow a started deposit until the anchor reports a final status.
+  const depositId = deposit?.tx.id;
+  const depositDone = !!deposit && FINAL_STATUSES.includes(deposit.tx.status);
+  React.useEffect(() => {
+    if (!address || !depositId || depositDone) return;
+    let active = true;
+    const timer = setInterval(() => {
+      depositStatus(address, depositId)
+        .then((tx) => {
+          if (!active) return;
+          setDeposit((d) => (d ? { ...d, tx } : d));
+          if (tx.status === "completed")
+            recordActivity(address, {
+              kind: "funds",
+              title: `Added funds · ${ANCHOR_DOMAIN}`,
+              amount:
+                BigInt(Math.round(Number(tx.amount_out ?? 0) * 100)) *
+                10n ** 5n,
+              symbol: sym,
+            });
+        })
+        .catch(() => {
+          /* keep polling; the anchor may be briefly unreachable */
+        });
+    }, 5_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [address, depositId, depositDone, sym]);
+
+  /**
+   * Card or bank: sign in to the anchor with the passkey and start a hosted
+   * deposit. The anchor's page opens from a link the user taps next: a
+   * window opened before the passkey prompt would steal the focus WebAuthn
+   * needs, and one opened after it would be blocked as a popup.
+   */
+  const depositViaAnchor = async () => {
+    if (!address) {
+      navigate("/signin");
+      return;
+    }
+    setFunding(true);
+    setFundError(null);
+    try {
+      const started = await startDeposit(address, anchorCode, amountFixed);
+      setDeposit({
+        url: started.url,
+        code: anchorCode,
+        tx: { id: started.id, status: "incomplete" },
+      });
+    } catch (err) {
+      setFundError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFunding(false);
+    }
   };
 
   const addFunds = async () => {
     if (method !== "wallet") {
-      closeModal();
+      await depositViaAnchor();
       return;
     }
     if (!address) {
@@ -919,7 +1033,9 @@ const Wallet: React.FC = () => {
                   }}
                 >
                   <span style={{ color: INK_SOFT }}>Payment fee</span>
-                  <span style={mono}>[FEE]</span>
+                  <span style={mono}>
+                    {viaAnchor ? "Shown on the anchor's page" : "None"}
+                  </span>
                 </div>
                 <div
                   style={{
@@ -930,7 +1046,7 @@ const Wallet: React.FC = () => {
                 >
                   <span style={{ fontWeight: 700 }}>You receive</span>
                   <span style={{ ...mono, color: TEAL_DARK }}>
-                    {amountFixed} {coin}
+                    {amountFixed} {viaAnchor ? anchorCode : coin}
                   </span>
                 </div>
               </div>
@@ -947,7 +1063,49 @@ const Wallet: React.FC = () => {
                   {fundError}
                 </p>
               )}
-              {fundHash ? (
+              {tooHigh && !deposit && (
+                <p style={{ margin: 0, fontSize: 13, color: RED }}>
+                  {ANCHOR_DOMAIN} takes at most {anchorLimits?.max_amount}{" "}
+                  {anchorCode} per deposit.
+                </p>
+              )}
+              {deposit ? (
+                <>
+                  <p style={{ margin: 0, fontSize: 14, lineHeight: 1.45 }}>
+                    {deposit.tx.status === "completed"
+                      ? `${deposit.tx.amount_out ?? amountFixed} ${deposit.code} landed in your account.`
+                      : FINAL_STATUSES.includes(deposit.tx.status)
+                        ? `The deposit stopped: ${deposit.tx.status.replace(/_/g, " ")}.${deposit.tx.message ? ` ${deposit.tx.message}` : ""}`
+                        : `Signed in to ${ANCHOR_DOMAIN}. Pay there; this page updates when the ${deposit.code} arrives (${deposit.tx.status.replace(/_/g, " ")}).`}
+                  </p>
+                  {!depositDone && (
+                    <a
+                      href={deposit.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        ...primaryButton(true),
+                        marginTop: 4,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        textDecoration: "none",
+                      }}
+                    >
+                      Continue on {ANCHOR_DOMAIN}
+                    </a>
+                  )}
+                  {depositDone && (
+                    <button
+                      type="button"
+                      onClick={closeModal}
+                      style={{ ...primaryButton(true), marginTop: 4 }}
+                    >
+                      Done
+                    </button>
+                  )}
+                </>
+              ) : fundHash ? (
                 <>
                   <p style={{ margin: 0, fontSize: 14 }}>
                     {amountFixed} {coin} landed in your account.{" "}
@@ -971,14 +1129,27 @@ const Wallet: React.FC = () => {
               ) : (
                 <button
                   type="button"
-                  disabled={tooLow || funding}
+                  disabled={
+                    tooLow || tooHigh || funding || (viaAnchor && !limits)
+                  }
                   onClick={() => void addFunds()}
                   style={{
-                    ...primaryButton(!tooLow && !funding),
+                    ...primaryButton(
+                      !tooLow &&
+                        !tooHigh &&
+                        !funding &&
+                        !(viaAnchor && !limits),
+                    ),
                     marginTop: 4,
                   }}
                 >
-                  {funding ? "Sending…" : `Add ${sym}${amountFixed}`}
+                  {funding
+                    ? viaAnchor
+                      ? "Signing in with your passkey…"
+                      : "Sending…"
+                    : viaAnchor
+                      ? `Pay ${amountFixed} ${anchorCode} by ${method === "card" ? "card" : "bank"}`
+                      : `Add ${sym}${amountFixed}`}
                 </button>
               )}
             </div>
