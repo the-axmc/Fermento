@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import type { Offering } from "batch_shares_contract";
+import type { Listing, Offering } from "batch_shares_contract";
 import { SHARES_ID, getShares } from "../contracts/client";
 import type { BatchInfo } from "../data/batches";
 import { useCatalogue } from "../hooks/useCatalogue";
@@ -34,7 +34,19 @@ interface Holding {
   heldPerShare: bigint;
 }
 
-type Action = { kind: "redeem" | "send" | "refund"; holding: Holding } | null;
+type Action = {
+  kind: "redeem" | "send" | "refund" | "sell";
+  holding: Holding;
+} | null;
+
+/** "12.5" -> 125000000n (7-decimal USDC units); undefined when not a price. */
+const toUnits = (text: string): bigint | undefined => {
+  const m = /^(\d+)(?:[.,](\d{0,7}))?$/.exec(text.trim());
+  if (!m) return undefined;
+  return BigInt(m[1]) * 10_000_000n + BigInt((m[2] ?? "").padEnd(7, "0"));
+};
+
+const fromUnits = (raw: bigint) => (Number(raw) / 10_000_000).toFixed(2);
 
 /* --------------------------------- Sheet ---------------------------------- */
 
@@ -51,6 +63,7 @@ const ActionSheet: React.FC<{
     action.kind === "redeem" ? perUnit.toString() : holding.shares.toString(),
   );
   const [to, setTo] = React.useState("");
+  const [ask, setAsk] = React.useState(fromUnits(holding.mark));
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [hash, setHash] = React.useState<string | null>(null);
@@ -60,11 +73,13 @@ const ActionSheet: React.FC<{
   const now = BigInt(Math.floor(Date.now() / 1000));
   const mature = now >= holding.offering.matures_at;
   const whole = shares > 0n && shares % perUnit === 0n;
+  const price = toUnits(ask);
   const invalid =
     shares === 0n ||
     shares > holding.shares ||
     (action.kind === "redeem" && (!whole || !mature)) ||
-    (action.kind === "send" && !/^[GC][A-Z2-7]{55}$/.test(to.trim()));
+    (action.kind === "send" && !/^[GC][A-Z2-7]{55}$/.test(to.trim())) ||
+    (action.kind === "sell" && !price);
 
   const run = async () => {
     if (!account.address) return;
@@ -97,6 +112,19 @@ const ActionSheet: React.FC<{
           title: `Refund · ${holding.info.label}`,
           batchId: holding.info.batchId,
           amount: holding.heldPerShare * shares,
+        });
+      } else if (action.kind === "sell") {
+        const tx = await getShares().list_for_sale({
+          batch_id: holding.info.batchId,
+          seller: account.address,
+          shares,
+          price: price!,
+        });
+        setHash(await account.submit(tx));
+        recordActivity(account.address, {
+          kind: "listing",
+          title: `Listed ${shares.toString()} shares at ${money(price)} · ${holding.info.label}`,
+          batchId: holding.info.batchId,
         });
       } else {
         const result = await getKit().transfer(
@@ -184,12 +212,16 @@ const ActionSheet: React.FC<{
               ? "Claim recorded"
               : action.kind === "refund"
                 ? "Money back"
-                : "Shares sent"
+                : action.kind === "sell"
+                  ? "Listed for sale"
+                  : "Shares sent"
             : action.kind === "redeem"
               ? `Redeem ${holding.info.label}`
               : action.kind === "refund"
                 ? `Take back your money`
-                : `Send shares of ${holding.info.label}`}
+                : action.kind === "sell"
+                  ? `Sell shares of ${holding.info.label}`
+                  : `Send shares of ${holding.info.label}`}
         </h2>
 
         {hash ? (
@@ -199,7 +231,9 @@ const ActionSheet: React.FC<{
                 ? `${(shares / perUnit).toString()} ${holding.info.unit}(s) are yours to collect. Show the claim at the cellar, then confirm on it once you have them: that pays the producer the rest.`
                 : action.kind === "refund"
                   ? `${money(holding.heldPerShare * shares)} is back in your wallet.`
-                  : `${shares.toString()} shares moved to ${to.trim().slice(0, 6)}…`}
+                  : action.kind === "sell"
+                    ? `${shares.toString()} shares are on sale at ${money(price)} each. You get paid when someone buys, less a 1 % fee; cancel any time from your cellar.`
+                    : `${shares.toString()} shares moved to ${to.trim().slice(0, 6)}…`}
             </p>
             {claimId !== null && (
               <Link
@@ -263,6 +297,33 @@ const ActionSheet: React.FC<{
                 />
               </label>
             )}
+            {action.kind === "sell" && (
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  fontSize: 13,
+                }}
+              >
+                Price per share in USDC (reference value now{" "}
+                {money(holding.mark)})
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={ask}
+                  onChange={(e) => setAsk(e.target.value)}
+                  style={input}
+                />
+                {price !== undefined && shares > 0n && (
+                  <span style={{ color: INK_SOFT }}>
+                    You receive{" "}
+                    {money(price * shares - (price * shares) / 100n)} if it all
+                    sells (1 % fee).
+                  </span>
+                )}
+              </label>
+            )}
             {action.kind === "refund" && (
               <p style={{ margin: 0, fontSize: 14, lineHeight: 1.4 }}>
                 An independent inspector found a problem with this batch. Hand
@@ -296,7 +357,9 @@ const ActionSheet: React.FC<{
                   ? `Redeem ${whole ? (shares / perUnit).toString() : ""} ${holding.info.unit}${shares / perUnit === 1n ? "" : "s"}`
                   : action.kind === "refund"
                     ? `Take back ${money(holding.heldPerShare * shares)}`
-                    : "Send"}
+                    : action.kind === "sell"
+                      ? `List ${shares.toString()} for sale`
+                      : "Send"}
             </button>
           </>
         )}
@@ -368,6 +431,34 @@ const Holdings: React.FC = () => {
   });
   const total = holdings.reduce((sum, h) => sum + h.mark * h.shares, 0n);
 
+  /** This account's open resale listings; their shares wait in the contract. */
+  const mine: { info: BatchInfo; listing: Listing }[] = catalogue.flatMap(
+    (info) =>
+      (chain.rows[info.batchId]?.listings ?? [])
+        .filter((l) => l.seller === account.address)
+        .map((listing) => ({ info, listing })),
+  );
+  const [cancelling, setCancelling] = React.useState<number | null>(null);
+  const [cancelError, setCancelError] = React.useState<string | null>(null);
+
+  const cancel = async (listing: Listing) => {
+    if (!account.address) return;
+    setCancelling(listing.id);
+    setCancelError(null);
+    try {
+      const tx = await getShares().cancel_listing({
+        listing_id: listing.id,
+        seller: account.address,
+      });
+      await account.submit(tx);
+      setTick((t) => t + 1);
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancelling(null);
+    }
+  };
+
   if (!account.address || !SHARES_ID) return null;
 
   return (
@@ -438,7 +529,7 @@ const Holdings: React.FC = () => {
         </svg>
       </button>
 
-      {open && holdings.length === 0 && (
+      {open && holdings.length === 0 && mine.length === 0 && (
         <p
           style={{
             margin: 0,
@@ -489,6 +580,15 @@ const Holdings: React.FC = () => {
             >
               Send
             </button>
+            {!h.defaulted && (
+              <button
+                type="button"
+                onClick={() => setAction({ kind: "sell", holding: h })}
+                style={small(false)}
+              >
+                Sell
+              </button>
+            )}
             {h.defaulted ? (
               <button
                 type="button"
@@ -508,6 +608,43 @@ const Holdings: React.FC = () => {
             )}
           </div>
         ))}
+
+      {open &&
+        mine.map(({ info, listing }) => (
+          <div
+            key={`listing-${listing.id}`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "12px 0",
+              borderBottom: `1.5px solid ${RULE}`,
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>
+                On sale · {info.name}
+              </div>
+              <div style={{ fontSize: 12, color: INK_SOFT }}>
+                {listing.shares.toString()} shares at {money(listing.price)} ·{" "}
+                {info.label}
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={cancelling === listing.id}
+              onClick={() => void cancel(listing)}
+              style={small(false)}
+            >
+              {cancelling === listing.id ? "…" : "Cancel"}
+            </button>
+          </div>
+        ))}
+      {cancelError && (
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: RED }}>
+          {cancelError}
+        </p>
+      )}
 
       {action && (
         <ActionSheet

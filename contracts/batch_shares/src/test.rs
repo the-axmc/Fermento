@@ -559,3 +559,146 @@ fn offering_from_before_escrow_still_pays_in_full() {
     let claim_id = s.shares.redeem(&14, &s.buyer, &10);
     assert_eq!(s.shares.claim_escrow(&claim_id), None);
 }
+
+// ---------- resale ----------
+
+/// Batch 14 with 10 shares bought by `s.buyer`, and a second buyer with
+/// 1000 USDC.
+fn resale_setup(s: &Setup) -> Address {
+    bought_ten(s);
+    let second = Address::generate(&s.env);
+    token::StellarAssetClient::new(&s.env, &s.usdc).mint(&second, &(1_000 * USDC));
+    second
+}
+
+#[test]
+fn listed_shares_wait_in_the_contract() {
+    let s = setup();
+    resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+
+    assert_eq!(id, 1);
+    assert_eq!(balance(&s.env, &s.share_token, &s.buyer), 6);
+    assert_eq!(balance(&s.env, &s.share_token, &s.shares_addr), 4);
+    let open = s.shares.listings(&14);
+    assert_eq!(open.len(), 1);
+    let l = open.get(0).unwrap();
+    assert_eq!(l.seller, s.buyer);
+    assert_eq!(l.shares, 4);
+    assert_eq!(l.price, 15 * USDC);
+    // The seller's position no longer counts the listed shares.
+    assert_eq!(s.shares.get_position(&14, &s.buyer).shares, 6);
+}
+
+#[test]
+fn a_second_buyer_takes_part_of_a_listing() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    let seller_before = balance(&s.env, &s.usdc, &s.buyer);
+
+    let paid = s.shares.buy_listing(&id, &second, &3);
+
+    // 45 USDC: 1 % to the treasury, the rest to the seller.
+    assert_eq!(paid, 45 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &second), 955 * USDC);
+    assert_eq!(balance(&s.env, &s.usdc, &s.treasury), 45 * USDC / 100);
+    assert_eq!(
+        balance(&s.env, &s.usdc, &s.buyer),
+        seller_before + 45 * USDC - 45 * USDC / 100
+    );
+    assert_eq!(balance(&s.env, &s.share_token, &second), 3);
+    assert_eq!(s.shares.listing(&id).shares, 1);
+
+    // Buying the last share closes the listing.
+    s.shares.buy_listing(&id, &second, &1);
+    assert_eq!(s.shares.listings(&14).len(), 0);
+    assert_eq!(balance(&s.env, &s.share_token, &s.shares_addr), 0);
+}
+
+#[test]
+fn resale_carries_the_storage_fee_checkpoint() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let t0 = s.env.ledger().timestamp();
+    s.env.ledger().set_timestamp(t0 + 100 * DAY);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &10, &(15 * USDC));
+    s.shares.buy_listing(&id, &second, &10);
+
+    // The second buyer owes the fee since the original purchase: 100 days.
+    let p = s.shares.get_position(&14, &second);
+    assert_eq!(p.shares, 10);
+    assert_eq!(p.fee_paid_until, t0);
+    assert_eq!(s.shares.accrued_fee(&14, &second, &10), 10 * USDC);
+}
+
+#[test]
+fn cancelling_returns_the_shares() {
+    let s = setup();
+    resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.cancel_listing(&id, &s.buyer);
+    assert_eq!(balance(&s.env, &s.share_token, &s.buyer), 10);
+    assert_eq!(s.shares.get_position(&14, &s.buyer).shares, 10);
+    assert_eq!(s.shares.listings(&14).len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #619)")]
+fn only_the_seller_cancels() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.cancel_listing(&id, &second);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #620)")]
+fn seller_cannot_buy_its_own_listing() {
+    let s = setup();
+    resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.buy_listing(&id, &s.buyer, &1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #603)")]
+fn buying_more_than_listed_panics() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.buy_listing(&id, &second, &5);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #611)")]
+fn no_resale_after_a_default() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.declare_default(&14, &s.inspector);
+    s.shares.buy_listing(&id, &second, &1);
+}
+
+#[test]
+fn a_listing_can_still_be_cancelled_and_refunded_after_a_default() {
+    let s = setup();
+    resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+    s.shares.declare_default(&14, &s.inspector);
+    s.shares.cancel_listing(&id, &s.buyer);
+    assert_eq!(s.shares.refund(&14, &s.buyer, &10), 36 * USDC);
+}
+
+#[test]
+fn bought_back_shares_keep_their_escrow_claim() {
+    let s = setup();
+    let second = resale_setup(&s);
+    let id = s.shares.list_for_sale(&14, &s.buyer, &10, &(15 * USDC));
+    s.shares.buy_listing(&id, &second, &10);
+    mature(&s);
+    // The held 30 % follows the shares to the new holder's claim.
+    let claim_id = s.shares.redeem(&14, &second, &10);
+    assert_eq!(s.shares.claim_escrow(&claim_id).unwrap().amount, 36 * USDC);
+    assert_eq!(s.shares.claim_escrow(&claim_id).unwrap().holder, second);
+}

@@ -6,6 +6,7 @@ import { useCatalogue } from "../hooks/useCatalogue";
 import MarkChart from "../components/MarkChart";
 import { useAccount } from "../hooks/useAccount";
 import { useBalance } from "../hooks/useBalance";
+import type { Listing } from "batch_shares_contract";
 import { useBatchChain, type BatchChain } from "../hooks/useBatchChain";
 import { SHARES_ID, USDC_ID, getShares } from "../contracts/client";
 import { recordActivity } from "../lib/activity";
@@ -335,6 +336,85 @@ const BuyerProtection: React.FC<{
   );
 };
 
+/** Shares other holders have put up for sale, cheapest first. */
+const Resale: React.FC<{
+  listings: Listing[];
+  me?: string;
+  onBuy: (listing: Listing) => void;
+}> = ({ listings, me, onBuy }) => {
+  if (listings.length === 0) return null;
+  return (
+    <div
+      style={{
+        borderRadius: 20,
+        background: CREAM,
+        padding: "14px 16px 4px",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          paddingBottom: 4,
+        }}
+      >
+        <span style={{ fontWeight: 800, fontSize: 15 }}>
+          From other holders
+        </span>
+        <span style={{ fontSize: 12, color: INK_SOFT }}>
+          {listings.length} listing{listings.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {listings.map((l) => {
+        const own = l.seller === me;
+        return (
+          <div
+            key={l.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "10px 0",
+              borderTop: `1.5px solid ${RULE}`,
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ ...mono, fontSize: 16 }}>{money(l.price)}</div>
+              <div style={{ fontSize: 12, color: INK_SOFT }}>
+                {l.shares.toString()} share{l.shares === 1n ? "" : "s"}
+                {own ? " · yours" : ""}
+              </div>
+            </div>
+            {!own && (
+              <button
+                type="button"
+                onClick={() => onBuy(l)}
+                style={{
+                  height: 36,
+                  padding: "0 16px",
+                  borderRadius: 18,
+                  border: 0,
+                  background: INK,
+                  color: CREAM,
+                  fontFamily: SANS,
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                Buy
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const Timeline: React.FC<{ filledAt?: bigint; maturesAt?: bigint }> = ({
   filledAt,
   maturesAt,
@@ -451,17 +531,22 @@ const Timeline: React.FC<{ filledAt?: bigint; maturesAt?: bigint }> = ({
 
 /* --------------------------------- Buy sheet -------------------------------- */
 
+/**
+ * Buy from the primary sale, or with `listing` from another holder's resale
+ * listing at its asking price.
+ */
 const BuySheet: React.FC<{
   info: BatchInfo;
   price: bigint;
   remaining: bigint;
+  listing?: Listing;
   onClose: () => void;
   onBought: () => void;
-}> = ({ info, price, remaining, onClose, onBought }) => {
+}> = ({ info, price, remaining, listing, onClose, onBought }) => {
   const account = useAccount();
   const navigate = useNavigate();
   const usdc = useBalance(USDC_ID, account.address);
-  const [qty, setQty] = React.useState("5");
+  const [qty, setQty] = React.useState(listing ? "1" : "5");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [hash, setHash] = React.useState<string | null>(null);
@@ -480,15 +565,21 @@ const BuySheet: React.FC<{
     setBusy(true);
     setError(null);
     try {
-      const tx = await getShares().buy({
-        batch_id: info.batchId,
-        buyer: account.address,
-        shares,
-      });
+      const tx = listing
+        ? await getShares().buy_listing({
+            listing_id: listing.id,
+            buyer: account.address,
+            shares,
+          })
+        : await getShares().buy({
+            batch_id: info.batchId,
+            buyer: account.address,
+            shares,
+          });
       setHash(await account.submit(tx));
       recordActivity(account.address, {
         kind: "buy",
-        title: `${shares.toString()} shares · ${info.label}`,
+        title: `${shares.toString()} shares · ${info.label}${listing ? " · resale" : ""}`,
         batchId: info.batchId,
         amount: -total,
       });
@@ -553,14 +644,19 @@ const BuySheet: React.FC<{
             letterSpacing: "-0.03em",
           }}
         >
-          {hash ? "You're in the cellar" : `Buy shares of ${info.label}`}
+          {hash
+            ? "You're in the cellar"
+            : listing
+              ? `Buy from another holder`
+              : `Buy shares of ${info.label}`}
         </h2>
 
         {hash ? (
           <>
             <p style={{ margin: 0, fontSize: 15, lineHeight: 1.45 }}>
-              {shares.toString()} shares are in your account. The producer was
-              paid {money(total)} in USDC.
+              {listing
+                ? `${shares.toString()} shares are in your account. The seller was paid ${money(total)} in USDC, less a 1 % fee.`
+                : `${shares.toString()} shares are in your account. The producer received 70 % of the ${money(total)} now; the rest is held until the batch is inspected and you collect your ${info.unit}.`}
             </p>
             <a
               href={`https://stellar.expert/explorer/testnet/tx/${hash}`}
@@ -660,7 +756,8 @@ const BuySheet: React.FC<{
 
             {tooMany && (
               <p style={{ margin: 0, fontSize: 13, color: RED }}>
-                Only {remaining.toString()} shares are left.
+                Only {remaining.toString()} shares are{" "}
+                {listing ? "listed" : "left"}.
               </p>
             )}
             {cantPay && (
@@ -736,6 +833,9 @@ const Batch: React.FC = () => {
     account.address,
   );
   const [buying, setBuying] = React.useState(false);
+  const [buyingListing, setBuyingListing] = React.useState<Listing | null>(
+    null,
+  );
 
   const offering = chain.offering;
   const fillPrice = offering?.price;
@@ -922,6 +1022,12 @@ const Batch: React.FC = () => {
               maturesAt={offering?.matures_at}
             />
 
+            <Resale
+              listings={chain.escrow?.defaulted ? [] : chain.listings}
+              me={account.address}
+              onBuy={setBuyingListing}
+            />
+
             <BuyerProtection
               chain={chain}
               unit={info.unit}
@@ -1101,6 +1207,16 @@ const Batch: React.FC = () => {
             price={offering.price}
             remaining={remaining}
             onClose={() => setBuying(false)}
+            onBought={chain.refresh}
+          />
+        )}
+        {buyingListing && info && (
+          <BuySheet
+            info={info}
+            price={buyingListing.price}
+            remaining={buyingListing.shares}
+            listing={buyingListing}
+            onClose={() => setBuyingListing(null)}
             onBought={chain.refresh}
           />
         )}

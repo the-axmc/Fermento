@@ -5,7 +5,8 @@
 // fungible shares of a registered batch.
 //
 // One classic Stellar asset (and its Stellar Asset Contract, SAC) exists per
-// batch so shares can trade on the native DEX. The issuer makes this contract
+// batch, so shares are standard tokens any wallet can hold (classic G accounts
+// could also trade them on the native DEX). The issuer makes this contract
 // the SAC admin; this contract mints shares on purchase and burns them on
 // redemption. Prices and fees are in the payment token (USDC, 7 decimals).
 //
@@ -15,6 +16,12 @@
 // INSPECTION_BPS is released when an inspector confirms the batch while it
 // ages; what is left is released per claim once the unit is collected. If the
 // inspector declares the batch failed, holders take back what is still held.
+//
+// Resale: holders list shares at their own price and other buyers take them,
+// in whole or in part, for the payment token. Smart accounts cannot place
+// offers on the classic DEX, so the market lives here. The seller pays
+// RESALE_FEE_BPS to the treasury, and the storage-fee checkpoint of the sold
+// shares moves to the buyer, so fees are neither charged twice nor skipped.
 //
 // Roles (stellar-access AccessControl):
 //   issuer    - opens, prices and closes offerings
@@ -36,6 +43,10 @@ const BPS: i128 = 10_000;
 const UPFRONT_BPS: i128 = 7_000;
 /// Share released to the producer when an inspector confirms the batch.
 const INSPECTION_BPS: i128 = 1_500;
+/// Platform fee on a resale, paid by the seller to the treasury.
+const RESALE_FEE_BPS: i128 = 100;
+/// Open listings per batch, so the listing index stays small.
+const MAX_OPEN_LISTINGS: u32 = 40;
 
 // ################## CROSS-CONTRACT ##################
 
@@ -75,6 +86,12 @@ pub enum DataKey {
     Escrow(u32),
     /// Money held for one claim until its units are collected.
     ClaimEscrow(u32),
+    /// A holder's resale listing, keyed by its sequential id.
+    Listing(u32),
+    /// Number of listings created so far.
+    ListingCount,
+    /// Ids of the open listings of a batch, oldest first.
+    BatchListings(u32),
 }
 
 /// Sale terms and state of one batch.
@@ -131,6 +148,24 @@ pub struct Escrow {
     pub refunded: i128,
 }
 
+/// Shares a holder offers to other buyers. The shares wait in this contract
+/// until they are bought or the listing is cancelled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Listing {
+    pub id: u32,
+    pub batch_id: u32,
+    pub seller: Address,
+    /// Shares still for sale.
+    pub shares: i128,
+    /// Asking price per share in payment token units.
+    pub price: i128,
+    /// Storage fees on these shares are settled up to here; the checkpoint
+    /// moves to the buyer with the shares.
+    pub fee_paid_until: u64,
+    pub created_at: u64,
+}
+
 /// Money held for one claim, released to the producer on collection.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -171,6 +206,13 @@ pub enum BatchSharesError {
     AlreadySettled = 615,
     /// Only the claim's holder or an inspector may confirm or refund it.
     NotClaimant = 616,
+    ListingNotFound = 617,
+    /// The batch already has MAX_OPEN_LISTINGS open listings.
+    TooManyListings = 618,
+    /// Only the seller may cancel a listing.
+    NotSeller = 619,
+    /// A seller cannot buy from their own listing.
+    OwnListing = 620,
 }
 
 // ################## EVENTS ##################
@@ -225,6 +267,41 @@ pub struct EscrowReleased {
     pub batch_id: u32,
     pub reason: Symbol,
     pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Listed {
+    #[topic]
+    pub batch_id: u32,
+    #[topic]
+    pub seller: Address,
+    pub listing_id: u32,
+    pub shares: i128,
+    pub price: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListingCancelled {
+    #[topic]
+    pub batch_id: u32,
+    pub listing_id: u32,
+    pub shares: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Resold {
+    #[topic]
+    pub batch_id: u32,
+    #[topic]
+    pub buyer: Address,
+    pub listing_id: u32,
+    pub seller: Address,
+    pub shares: i128,
+    pub paid: i128,
+    pub fee: i128,
 }
 
 #[contractevent]
@@ -425,20 +502,8 @@ impl BatchShares {
         e.storage().persistent().set(&DataKey::Offering(batch_id), &offering);
         keep_key(e, &DataKey::Offering(batch_id));
 
-        // Fees for these shares accrue from now; earlier shares keep their
-        // checkpoint, so the position is settled at the weighted date.
-        let now = e.ledger().timestamp();
-        let position = Self::position(e, batch_id, &buyer);
-        let paid_until = if position.shares == 0 {
-            now
-        } else {
-            Self::weighted_checkpoint(position.shares, position.fee_paid_until, shares, now)
-        };
-        e.storage().persistent().set(
-            &DataKey::Position(batch_id, buyer.clone()),
-            &Position { shares: position.shares + shares, fee_paid_until: paid_until },
-        );
-        keep_key(e, &DataKey::Position(batch_id, buyer.clone()));
+        // Fees for these shares accrue from now.
+        Self::add_to_position(e, batch_id, &buyer, shares, e.ledger().timestamp());
 
         SharesBought { batch_id, buyer, shares, paid }.publish(e);
         paid
@@ -653,7 +718,131 @@ impl BatchShares {
         record.amount
     }
 
+    // ---------- resale ----------
+
+    /// Offer `shares` to other buyers at `price` per share. The shares move
+    /// into this contract until they are bought or the listing is cancelled.
+    /// Returns the listing id.
+    #[when_not_paused]
+    pub fn list_for_sale(e: &Env, batch_id: u32, seller: Address, shares: i128, price: i128) -> u32 {
+        seller.require_auth();
+        if shares <= 0 || price <= 0 {
+            panic_with_error!(e, BatchSharesError::InvalidAmount);
+        }
+        let offering = Self::load(e, batch_id);
+        Self::require_not_defaulted(e, batch_id);
+        let mut open = Self::open_listing_ids(e, batch_id);
+        if open.len() >= MAX_OPEN_LISTINGS {
+            panic_with_error!(e, BatchSharesError::TooManyListings);
+        }
+
+        let this = e.current_contract_address();
+        token::Client::new(e, &offering.share_token).transfer(&seller, &this, &shares);
+        let fee_paid_until = Self::take_from_position(e, &offering, &seller, shares);
+
+        let id: u32 = e.storage().instance().get(&DataKey::ListingCount).unwrap_or(0) + 1;
+        e.storage().instance().set(&DataKey::ListingCount, &id);
+        let listing = Listing {
+            id,
+            batch_id,
+            seller: seller.clone(),
+            shares,
+            price,
+            fee_paid_until,
+            created_at: e.ledger().timestamp(),
+        };
+        Self::save_listing(e, &listing);
+        open.push_back(id);
+        Self::save_open_listing_ids(e, batch_id, &open);
+
+        Listed { batch_id, seller, listing_id: id, shares, price }.publish(e);
+        id
+    }
+
+    /// Take the remaining shares of a listing back.
+    #[when_not_paused]
+    pub fn cancel_listing(e: &Env, listing_id: u32, seller: Address) {
+        seller.require_auth();
+        let listing = Self::load_listing(e, listing_id);
+        if listing.seller != seller {
+            panic_with_error!(e, BatchSharesError::NotSeller);
+        }
+        let offering = Self::load(e, listing.batch_id);
+        token::Client::new(e, &offering.share_token).transfer(
+            &e.current_contract_address(),
+            &seller,
+            &listing.shares,
+        );
+        Self::add_to_position(e, listing.batch_id, &seller, listing.shares, listing.fee_paid_until);
+        Self::close_listing(e, &listing);
+        ListingCancelled { batch_id: listing.batch_id, listing_id, shares: listing.shares }.publish(e);
+    }
+
+    /// Buy `shares` from a listing at its asking price. The seller receives the
+    /// price minus RESALE_FEE_BPS, which goes to the treasury. Returns what the
+    /// buyer paid.
+    #[when_not_paused]
+    pub fn buy_listing(e: &Env, listing_id: u32, buyer: Address, shares: i128) -> i128 {
+        buyer.require_auth();
+        let mut listing = Self::load_listing(e, listing_id);
+        if shares <= 0 || shares > listing.shares {
+            panic_with_error!(e, BatchSharesError::InvalidAmount);
+        }
+        if buyer == listing.seller {
+            panic_with_error!(e, BatchSharesError::OwnListing);
+        }
+        Self::require_not_defaulted(e, listing.batch_id);
+        let offering = Self::load(e, listing.batch_id);
+
+        let paid = listing.price * shares;
+        let fee = paid * RESALE_FEE_BPS / BPS;
+        let payment = token::Client::new(e, &Self::payment_token(e));
+        payment.transfer(&buyer, &listing.seller, &(paid - fee));
+        if fee > 0 {
+            let treasury = Self::treasury(e);
+            payment.transfer(&buyer, &treasury, &fee);
+        }
+        token::Client::new(e, &offering.share_token).transfer(
+            &e.current_contract_address(),
+            &buyer,
+            &shares,
+        );
+        Self::add_to_position(e, listing.batch_id, &buyer, shares, listing.fee_paid_until);
+
+        listing.shares -= shares;
+        if listing.shares == 0 {
+            Self::close_listing(e, &listing);
+        } else {
+            Self::save_listing(e, &listing);
+        }
+        Resold {
+            batch_id: listing.batch_id,
+            buyer,
+            listing_id,
+            seller: listing.seller,
+            shares,
+            paid,
+            fee,
+        }
+        .publish(e);
+        paid
+    }
+
     // ---------- views ----------
+
+    /// One listing, open or not yet bought out.
+    pub fn listing(e: &Env, listing_id: u32) -> Listing {
+        Self::load_listing(e, listing_id)
+    }
+
+    /// Open listings of a batch, oldest first.
+    pub fn listings(e: &Env, batch_id: u32) -> Vec<Listing> {
+        let mut out = Vec::new(e);
+        for id in Self::open_listing_ids(e, batch_id).iter() {
+            out.push_back(Self::load_listing(e, id));
+        }
+        out
+    }
 
     pub fn offering(e: &Env, batch_id: u32) -> Offering {
         Self::load(e, batch_id)
@@ -755,6 +944,84 @@ impl BatchShares {
         } else {
             inspection + collection
         }
+    }
+
+    fn require_not_defaulted(e: &Env, batch_id: u32) {
+        if Self::load_escrow(e, batch_id).is_some_and(|esc| esc.defaulted) {
+            panic_with_error!(e, BatchSharesError::Defaulted);
+        }
+    }
+
+    /// Add `shares` settled until `at` to a holder's position. Shares already
+    /// held keep their checkpoint, so the position settles at the weighted date.
+    fn add_to_position(e: &Env, batch_id: u32, holder: &Address, shares: i128, at: u64) {
+        let position = Self::position(e, batch_id, holder);
+        let fee_paid_until = if position.shares == 0 {
+            at
+        } else {
+            Self::weighted_checkpoint(position.shares, position.fee_paid_until, shares, at)
+        };
+        let key = DataKey::Position(batch_id, holder.clone());
+        e.storage()
+            .persistent()
+            .set(&key, &Position { shares: position.shares + shares, fee_paid_until });
+        keep_key(e, &key);
+    }
+
+    /// Remove `shares` from a holder's position and return the date their
+    /// fees are settled until. Shares the position does not know (received
+    /// from elsewhere) count from the fill date, as at redemption.
+    fn take_from_position(e: &Env, offering: &Offering, holder: &Address, shares: i128) -> u64 {
+        let position = Self::position(e, offering.batch_id, holder);
+        let known = if position.shares < shares { position.shares } else { shares };
+        let unknown = shares - known;
+        let key = DataKey::Position(offering.batch_id, holder.clone());
+        if known > 0 {
+            e.storage().persistent().set(
+                &key,
+                &Position {
+                    shares: position.shares - known,
+                    fee_paid_until: position.fee_paid_until,
+                },
+            );
+            keep_key(e, &key);
+        }
+        match (known, unknown) {
+            (0, _) => offering.filled_at,
+            (_, 0) => position.fee_paid_until,
+            _ => Self::weighted_checkpoint(known, position.fee_paid_until, unknown, offering.filled_at),
+        }
+    }
+
+    fn load_listing(e: &Env, listing_id: u32) -> Listing {
+        e.storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
+            .unwrap_or_else(|| panic_with_error!(e, BatchSharesError::ListingNotFound))
+    }
+
+    fn save_listing(e: &Env, listing: &Listing) {
+        e.storage().persistent().set(&DataKey::Listing(listing.id), listing);
+        keep_key(e, &DataKey::Listing(listing.id));
+    }
+
+    fn open_listing_ids(e: &Env, batch_id: u32) -> Vec<u32> {
+        e.storage().persistent().get(&DataKey::BatchListings(batch_id)).unwrap_or(Vec::new(e))
+    }
+
+    fn save_open_listing_ids(e: &Env, batch_id: u32, ids: &Vec<u32>) {
+        e.storage().persistent().set(&DataKey::BatchListings(batch_id), ids);
+        keep_key(e, &DataKey::BatchListings(batch_id));
+    }
+
+    /// Drop a sold-out or cancelled listing from storage and the batch index.
+    fn close_listing(e: &Env, listing: &Listing) {
+        e.storage().persistent().remove(&DataKey::Listing(listing.id));
+        let mut open = Self::open_listing_ids(e, listing.batch_id);
+        if let Some(i) = open.first_index_of(listing.id) {
+            open.remove(i);
+        }
+        Self::save_open_listing_ids(e, listing.batch_id, &open);
     }
 
     fn position(e: &Env, batch_id: u32, holder: &Address) -> Position {
