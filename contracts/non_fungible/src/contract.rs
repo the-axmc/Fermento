@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    BytesN, Env, String, Symbol, Vec,
+    BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
 use stellar_contract_utils::pausable::{self as pausable, Pausable};
@@ -92,6 +92,24 @@ pub struct UnitsClaimed {
     pub units: u32,
 }
 
+
+// ################## STORAGE TTL ##################
+//
+// Rent: every entry has a TTL. Writes extend the entry they touch and the
+// instance, so active batches pay to stay alive (skills.stellar.org guidance).
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+
+fn keep_alive(e: &Env) {
+    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
+    e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 // ################## CONTRACT ##################
 
 #[contract]
@@ -122,6 +140,7 @@ impl BatchRegistry {
     #[only_role(caller, "minter")]
     #[when_not_paused]
     pub fn mint(e: &Env, to: Address, token_id: u32, caller: Address) {
+        keep_alive(e);
         <Self as NonFungibleToken>::ContractType::mint_with_id(e, &to, token_id);
     }
 
@@ -130,10 +149,13 @@ impl BatchRegistry {
     #[only_role(caller, "minter")]
     #[when_not_paused]
     pub fn register_batch(e: &Env, to: Address, batch_id: u32, uri: String, caller: Address) {
+        keep_alive(e);
         <Self as NonFungibleToken>::ContractType::mint_with_id(e, &to, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
+        keep_key(e, &BatchKey::Uri(batch_id));
         let stage = Symbol::new(e, "filled");
         e.storage().persistent().set(&BatchKey::Stage(batch_id), &stage);
+        keep_key(e, &BatchKey::Stage(batch_id));
         BatchRegistered { batch_id, owner: to, uri }.publish(e);
         BatchStageChanged { batch_id, stage }.publish(e);
     }
@@ -141,16 +163,20 @@ impl BatchRegistry {
     /// Replace the metadata URI of an existing batch.
     #[only_role(caller, "minter")]
     pub fn set_token_uri(e: &Env, batch_id: u32, uri: String, caller: Address) {
+        keep_alive(e);
         // Panics with NonExistentToken when the batch was never minted.
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Uri(batch_id), &uri);
+        keep_key(e, &BatchKey::Uri(batch_id));
     }
 
     /// Move a batch to a new lifecycle stage and emit `BatchStageChanged`.
     #[only_role(caller, "minter")]
     pub fn set_stage(e: &Env, batch_id: u32, stage: Symbol, caller: Address) {
+        keep_alive(e);
         Base::owner_of(e, batch_id);
         e.storage().persistent().set(&BatchKey::Stage(batch_id), &stage);
+        keep_key(e, &BatchKey::Stage(batch_id));
         BatchStageChanged { batch_id, stage }.publish(e);
     }
 
@@ -164,6 +190,7 @@ impl BatchRegistry {
     #[only_role(caller, "redeemer")]
     #[when_not_paused]
     pub fn claim(e: &Env, batch_id: u32, claimer: Address, units: u32, caller: Address) -> u32 {
+        keep_alive(e);
         if units == 0 {
             panic_with_error!(e, BatchRegistryError::ZeroUnits);
         }
@@ -174,9 +201,11 @@ impl BatchRegistry {
 
         let claimed: u32 = e.storage().persistent().get(&BatchKey::Claimed(batch_id)).unwrap_or(0);
         e.storage().persistent().set(&BatchKey::Claimed(batch_id), &(claimed + units));
+        keep_key(e, &BatchKey::Claimed(batch_id));
 
         let record = UnitClaim { batch_id, claimer: claimer.clone(), units, ledger: e.ledger().sequence() };
         e.storage().persistent().set(&BatchKey::Claim(claim_id), &record);
+        keep_key(e, &BatchKey::Claim(claim_id));
 
         UnitsClaimed { batch_id, claim_id, claimer, units }.publish(e);
         claim_id

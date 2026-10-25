@@ -2,23 +2,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
-import "@stellar/design-system/build/styles.min.css";
-import { WalletProvider } from "./providers/WalletProvider.tsx";
-import { NotificationProvider } from "./providers/NotificationProvider.tsx";
 import { AccountProvider } from "./wallet/AccountProvider.tsx";
 import { BrowserRouter } from "react-router-dom";
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <StrictMode>
-    <NotificationProvider>
-      {/* Passkey smart account for buyers; WalletProvider keeps the producer tools on Home. */}
-      <AccountProvider>
-        <WalletProvider>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
-        </WalletProvider>
-      </AccountProvider>
-    </NotificationProvider>
+    {/* Passkey smart account session for the whole app. */}
+    <AccountProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </AccountProvider>
   </StrictMode>,
 );

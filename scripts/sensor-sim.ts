@@ -126,11 +126,8 @@ async function invoke(op: xdr.Operation) {
       `send failed: ${sent.status} ${JSON.stringify(sent.errorResult)}`,
     );
   }
-  let result = await server.getTransaction(sent.hash);
-  while (result.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1500));
-    result = await server.getTransaction(sent.hash);
-  }
+  // pollTransaction retries getTransaction with a bounded attempt count.
+  const result = await server.pollTransaction(sent.hash, { attempts: 30 });
   if (result.status !== "SUCCESS")
     throw new Error(`tx ${sent.hash} ${result.status}`);
   return { hash: sent.hash, returnValue: result.returnValue };

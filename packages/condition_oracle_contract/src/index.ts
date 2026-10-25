@@ -174,6 +174,11 @@ export interface Client {
   curve: ({category}: {category: string}, options?: MethodOptions) => Promise<AssembledTransaction<Array<u32>>>
 
   /**
+   * Construct and simulate a upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  upgrade: ({new_wasm_hash, operator}: {new_wasm_hash: Buffer, operator: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
    * Construct and simulate a has_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns `Some(index)` if the account has the specified role,
    * where `index` is the position of the account for that role,
@@ -522,6 +527,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAFY3VydmUAAAAAAAABAAAAAAAAAAhjYXRlZ29yeQAAABEAAAABAAAD6gAAAAQ=",
         "AAAABQAAAAAAAAAAAAAADU1hcmtQdWJsaXNoZWQAAAAAAAABAAAADm1hcmtfcHVibGlzaGVkAAAAAAADAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAAAAAAAAV2YWx1ZQAAAAAAAAsAAAAAAAAAAAAAAAl0aW1lc3RhbXAAAAAAAAAGAAAAAAAAAAI=",
         "AAAABQAAAAAAAAAAAAAADVJlYWRpbmdQb3N0ZWQAAAAAAAABAAAADnJlYWRpbmdfcG9zdGVkAAAAAAAFAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAAAAAAAAl0aW1lc3RhbXAAAAAAAAAGAAAAAAAAAAAAAAAGdGVtcF9jAAAAAAAFAAAAAAAAAAAAAAAIaHVtaWRpdHkAAAAEAAAAAAAAAAAAAAAIaW5fcmFuZ2UAAAABAAAAAAAAAAI=",
+        "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAACAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAAAAAACG9wZXJhdG9yAAAAEwAAAAA=",
         "AAAAAAAAAXJSZXR1cm5zIGBTb21lKGluZGV4KWAgaWYgdGhlIGFjY291bnQgaGFzIHRoZSBzcGVjaWZpZWQgcm9sZSwKd2hlcmUgYGluZGV4YCBpcyB0aGUgcG9zaXRpb24gb2YgdGhlIGFjY291bnQgZm9yIHRoYXQgcm9sZSwKYW5kIGNhbiBiZSB1c2VkIHRvIHF1ZXJ5IFtgQWNjZXNzQ29udHJvbDo6Z2V0X3JvbGVfbWVtYmVyKClgXS4KUmV0dXJucyBgTm9uZWAgaWYgdGhlIGFjY291bnQgZG9lcyBub3QgaGF2ZSB0aGUgc3BlY2lmaWVkIHJvbGUuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byBjaGVjay4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byBjaGVjayBmb3IuAAAAAAAIaGFzX3JvbGUAAAACAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABHJvbGUAAAARAAAAAQAAA+gAAAAE",
         "AAAAAAAAAE9SZXR1cm5zIHRoZSBhZG1pbiBhY2NvdW50LgoKIyBBcmd1bWVudHMKCiogYGVgIC0gQWNjZXNzIHRvIFNvcm9iYW4gZW52aXJvbm1lbnQuAAAAAAlnZXRfYWRtaW4AAAAAAAAAAAAAAQAAA+gAAAAT",
         "AAAAAAAAAAAAAAAJZ2V0X3N0YXRzAAAAAAAAAQAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAB9AAAAAFU3RhdHMAAAA=",
@@ -559,6 +565,7 @@ export class Client extends ContractClient {
     mark: this.txFromJSON<Mark>,
         batch: this.txFromJSON<BatchConfig>,
         curve: this.txFromJSON<Array<u32>>,
+        upgrade: this.txFromJSON<null>,
         has_role: this.txFromJSON<Option<u32>>,
         get_admin: this.txFromJSON<Option<string>>,
         get_stats: this.txFromJSON<Stats>,

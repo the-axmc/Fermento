@@ -18,9 +18,10 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, Symbol, Vec,
+    Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
+use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
 use stellar_macros::only_role;
 
 const BPS: i128 = 10_000;
@@ -141,6 +142,24 @@ pub struct MarkPublished {
     pub timestamp: u64,
 }
 
+
+// ################## STORAGE TTL ##################
+//
+// Rent: every entry has a TTL. Writes extend the entry they touch and the
+// instance, so active batches pay to stay alive (skills.stellar.org guidance).
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 120 * DAY_IN_LEDGERS;
+
+fn keep_alive(e: &Env) {
+    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+fn keep_key<K: IntoVal<Env, Val>>(e: &Env, key: &K) {
+    e.storage().persistent().extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
 // ################## CONTRACT ##################
 
 #[contract]
@@ -151,6 +170,7 @@ impl ConditionOracle {
     pub fn __constructor(e: &Env, admin: Address, curator: Address) {
         access_control::set_admin(e, &admin);
         access_control::grant_role_no_auth(e, &curator, &Symbol::new(e, "curator"), &admin);
+        access_control::grant_role_no_auth(e, &admin, &Symbol::new(e, "upgrader"), &admin);
     }
 
     // ---------- curation ----------
@@ -159,6 +179,7 @@ impl ConditionOracle {
     /// month 0, 1, 2, ... since fill. The last point holds afterwards.
     #[only_role(caller, "curator")]
     pub fn set_curve(e: &Env, category: Symbol, points: Vec<u32>, caller: Address) {
+        keep_alive(e);
         if points.is_empty() {
             panic_with_error!(e, OracleError::InvalidCurve);
         }
@@ -167,11 +188,13 @@ impl ConditionOracle {
                 panic_with_error!(e, OracleError::InvalidCurve);
             }
         }
-        e.storage().persistent().set(&DataKey::Curve(category), &points);
+        e.storage().persistent().set(&DataKey::Curve(category.clone()), &points);
+        keep_key(e, &DataKey::Curve(category));
     }
 
     #[only_role(caller, "curator")]
     pub fn register_batch(e: &Env, config: BatchConfig, caller: Address) {
+        keep_alive(e);
         if e.storage().persistent().has(&DataKey::Batch(config.batch_id)) {
             panic_with_error!(e, OracleError::BatchExists);
         }
@@ -186,18 +209,22 @@ impl ConditionOracle {
             panic_with_error!(e, OracleError::InvalidTerms);
         }
         e.storage().persistent().set(&DataKey::Batch(config.batch_id), &config);
+        keep_key(e, &DataKey::Batch(config.batch_id));
         e.storage().persistent().set(
             &DataKey::Stats(config.batch_id),
             &Stats { total: 0, in_range: 0, last_timestamp: 0, last_temp_c: 0, last_humidity: 0 },
         );
+        keep_key(e, &DataKey::Stats(config.batch_id));
     }
 
     /// Rotate the sensor key of a batch.
     #[only_role(caller, "curator")]
     pub fn set_sensor(e: &Env, batch_id: u32, sensor: BytesN<32>, caller: Address) {
+        keep_alive(e);
         let mut config = Self::load(e, batch_id);
         config.sensor = sensor;
         e.storage().persistent().set(&DataKey::Batch(batch_id), &config);
+        keep_key(e, &DataKey::Batch(batch_id));
     }
 
     // ---------- readings ----------
@@ -205,6 +232,7 @@ impl ConditionOracle {
     /// Post a sensor reading. Anyone may relay it; the signature by the
     /// batch's sensor key is what authorizes it.
     pub fn post_reading(e: &Env, batch_id: u32, reading: Reading, signature: BytesN<64>) -> bool {
+        keep_alive(e);
         if reading.batch_id != batch_id {
             panic_with_error!(e, OracleError::BatchMismatch);
         }
@@ -235,6 +263,7 @@ impl ConditionOracle {
         stats.last_temp_c = reading.temp_c;
         stats.last_humidity = reading.humidity;
         e.storage().persistent().set(&DataKey::Stats(batch_id), &stats);
+        keep_key(e, &DataKey::Stats(batch_id));
 
         ReadingPosted {
             batch_id,
@@ -262,6 +291,7 @@ impl ConditionOracle {
     /// Compute the mark now, store it in the batch's history and emit it.
     /// Permissionless so a cron or the relayer can post one per epoch.
     pub fn publish_mark(e: &Env, batch_id: u32) -> Mark {
+        keep_alive(e);
         let mark = Self::mark(e, batch_id);
         let mut history: Vec<Mark> =
             e.storage().persistent().get(&DataKey::Marks(batch_id)).unwrap_or(Vec::new(e));
@@ -270,6 +300,7 @@ impl ConditionOracle {
         }
         history.push_back(mark.clone());
         e.storage().persistent().set(&DataKey::Marks(batch_id), &history);
+        keep_key(e, &DataKey::Marks(batch_id));
         MarkPublished { batch_id, value: mark.value, timestamp: mark.timestamp }.publish(e);
         mark
     }
@@ -351,6 +382,14 @@ impl ConditionOracle {
         }
         let share = stats.in_range as i128 * BPS / stats.total as i128;
         MIN_CONDITION_BPS + (BPS - MIN_CONDITION_BPS) * share / BPS
+    }
+}
+
+#[contractimpl]
+impl Upgradeable for ConditionOracle {
+    #[only_role(operator, "upgrader")]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        upgradeable::upgrade(e, &new_wasm_hash);
     }
 }
 

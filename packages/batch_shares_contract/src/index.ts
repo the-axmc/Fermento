@@ -180,6 +180,11 @@ export interface Client {
   unpause: ({caller}: {caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
+   * Construct and simulate a upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  upgrade: ({new_wasm_hash, operator}: {new_wasm_hash: Buffer, operator: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
    * Construct and simulate a has_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns `Some(index)` if the account has the specified role,
    * where `index` is the position of the account for that role,
@@ -544,6 +549,7 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAGcGF1c2VkAAAAAAAAAAAAAQAAAAE=",
         "AAAAAAAAAMJSZWRlZW0gYHNoYXJlc2AgZm9yIHVuaXRzIG9uY2UgdGhlIGJhdGNoIGlzIG1hdHVyZS4gVGhlIGhvbGRlciBnaXZlcwpiYWNrIHRoZSBzaGFyZXMsIHBheXMgdGhlIGFjY3J1ZWQgc3RvcmFnZSBmZWUgdG8gdGhlIHRyZWFzdXJ5LCBhbmQgYQpjbGFpbSBpcyByZWNvcmRlZCBvbiB0aGUgcmVnaXN0cnkuIFJldHVybnMgdGhlIGNsYWltIGlkLgAAAAAABnJlZGVlbQAAAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAZob2xkZXIAAAAAABMAAAAAAAAABnNoYXJlcwAAAAAACwAAAAEAAAAE",
         "AAAAAAAAAAAAAAAHdW5wYXVzZQAAAAABAAAAAAAAAAZjYWxsZXIAAAAAABMAAAAA",
+        "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAACAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAAAAAACG9wZXJhdG9yAAAAEwAAAAA=",
         "AAAAAAAAAXJSZXR1cm5zIGBTb21lKGluZGV4KWAgaWYgdGhlIGFjY291bnQgaGFzIHRoZSBzcGVjaWZpZWQgcm9sZSwKd2hlcmUgYGluZGV4YCBpcyB0aGUgcG9zaXRpb24gb2YgdGhlIGFjY291bnQgZm9yIHRoYXQgcm9sZSwKYW5kIGNhbiBiZSB1c2VkIHRvIHF1ZXJ5IFtgQWNjZXNzQ29udHJvbDo6Z2V0X3JvbGVfbWVtYmVyKClgXS4KUmV0dXJucyBgTm9uZWAgaWYgdGhlIGFjY291bnQgZG9lcyBub3QgaGF2ZSB0aGUgc3BlY2lmaWVkIHJvbGUuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byBjaGVjay4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byBjaGVjayBmb3IuAAAAAAAIaGFzX3JvbGUAAAACAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABHJvbGUAAAARAAAAAQAAA+gAAAAE",
         "AAAAAAAAAAAAAAAIb2ZmZXJpbmcAAAABAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAH0AAAAAhPZmZlcmluZw==",
         "AAAAAAAAAAAAAAAIcmVnaXN0cnkAAAAAAAAAAQAAABM=",
@@ -595,6 +601,7 @@ export class Client extends ContractClient {
         paused: this.txFromJSON<boolean>,
         redeem: this.txFromJSON<u32>,
         unpause: this.txFromJSON<null>,
+        upgrade: this.txFromJSON<null>,
         has_role: this.txFromJSON<Option<u32>>,
         offering: this.txFromJSON<Offering>,
         registry: this.txFromJSON<string>,

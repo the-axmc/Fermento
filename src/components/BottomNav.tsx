@@ -57,7 +57,7 @@ const items: Item[] = [
   {
     to: "/produce",
     label: "Add ferment",
-    match: ["/produce", "/producer"],
+    match: ["/produce"],
     icon: (
       <svg {...iconProps}>
         <rect x="3" y="3" width="18" height="18" rx="5" />
