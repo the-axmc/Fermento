@@ -27,6 +27,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   Asset,
   Contract,
+  Horizon,
   Keypair,
   Networks,
   Operation,
@@ -449,6 +450,118 @@ const listBatch = async (req: ListingRequest, origin: string) => {
   return row;
 };
 
+/* --------------------------------- Treasury -------------------------------- */
+//
+// Testnet "Add funds": sends USDC or EURC from a treasury account to a user's
+// smart account. The treasury is TREASURY_SECRET when set, otherwise the admin
+// key. Missing trustlines are created at startup so tokens can be sent to it.
+
+const HORIZON_URL =
+  process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+const treasury = process.env.TREASURY_SECRET
+  ? Keypair.fromSecret(process.env.TREASURY_SECRET)
+  : admin;
+/** Circle's testnet issuers; override with USDC_ASSET / EURC_ASSET = CODE:ISSUER. */
+const TREASURY_ASSETS: Record<string, Asset> = Object.fromEntries(
+  [
+    process.env.USDC_ASSET ??
+      "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    process.env.EURC_ASSET ??
+      "EURC:GB3Q6QDZYTHWT7E5PVS3W7FUT5GVAFC5KSZFFLPU25GO7VTC3NM2ZTVO",
+  ].map((s) => {
+    const [code, issuer] = s.split(":");
+    return [code, new Asset(code, issuer)];
+  }),
+);
+/** Largest single top-up, in whole tokens. */
+const FUND_MAX = Number(process.env.FUND_MAX ?? 50);
+
+const horizon = new Horizon.Server(HORIZON_URL);
+
+const treasuryBalances = async () => {
+  const account = await horizon.loadAccount(treasury.publicKey());
+  return Object.fromEntries(
+    Object.entries(TREASURY_ASSETS).map(([code, asset]) => {
+      const line = account.balances.find(
+        (b) =>
+          "asset_code" in b &&
+          b.asset_code === code &&
+          b.asset_issuer === asset.getIssuer(),
+      );
+      return [
+        code,
+        {
+          issuer: asset.getIssuer(),
+          sac: asset.contractId(PASSPHRASE),
+          trustline: !!line,
+          balance: line ? line.balance : "0",
+        },
+      ];
+    }),
+  );
+};
+
+/** Open USDC/EURC trustlines on the treasury so tokens can be sent to it. */
+const ensureTrustlines = async () => {
+  const balances = await treasuryBalances();
+  const missing = Object.entries(balances).filter(([, b]) => !b.trustline);
+  if (missing.length === 0) return;
+  const account = await horizon.loadAccount(treasury.publicKey());
+  const builder = new TransactionBuilder(account, {
+    fee: "10000",
+    networkPassphrase: PASSPHRASE,
+  });
+  for (const [code] of missing) {
+    builder.addOperation(
+      Operation.changeTrust({ asset: TREASURY_ASSETS[code] }),
+    );
+  }
+  const tx = builder.setTimeout(60).build();
+  tx.sign(treasury);
+  await horizon.submitTransaction(tx);
+  console.log(
+    `treasury ${treasury.publicKey()} now trusts ${missing.map(([c]) => c).join(", ")}`,
+  );
+};
+
+/** Transfer `amount` whole tokens of `code` from the treasury to `to` (G or C). */
+const fund = async (to: string, code: string, amount: number) => {
+  const asset = TREASURY_ASSETS[code];
+  if (!asset) throw new Error(`unknown asset ${code}`);
+  const raw = BigInt(Math.round(amount * 10_000_000));
+  const account = await server.getAccount(treasury.publicKey());
+  const tx = new TransactionBuilder(account, {
+    fee: "100000",
+    networkPassphrase: PASSPHRASE,
+  })
+    .addOperation(
+      new Contract(asset.contractId(PASSPHRASE)).call(
+        "transfer",
+        nativeToScVal(treasury.publicKey(), { type: "address" }),
+        nativeToScVal(to, { type: "address" }),
+        nativeToScVal(raw, { type: "i128" }),
+      ),
+    )
+    .setTimeout(60)
+    .build();
+  const prepared = await server.prepareTransaction(tx);
+  prepared.sign(treasury);
+  const sent = await server.sendTransaction(prepared);
+  if (sent.status !== "PENDING") {
+    throw new Error(
+      `send failed: ${sent.status} ${JSON.stringify(sent.errorResult)}`,
+    );
+  }
+  let result = await server.getTransaction(sent.hash);
+  while (result.status === "NOT_FOUND") {
+    await new Promise((r) => setTimeout(r, 1500));
+    result = await server.getTransaction(sent.hash);
+  }
+  if (result.status !== "SUCCESS")
+    throw new Error(`tx ${sent.hash} ${result.status}`);
+  return sent.hash;
+};
+
 /* ---------------------------------- Server --------------------------------- */
 
 const json = (res: ServerResponse, status: number, body: unknown) => {
@@ -514,6 +627,32 @@ createServer(async (req, res) => {
         busy = false;
       }
     }
+    if (req.method === "GET" && url.pathname === "/api/treasury") {
+      return json(res, 200, {
+        address: treasury.publicKey(),
+        max: FUND_MAX,
+        assets: await treasuryBalances(),
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/api/fund") {
+      const body = JSON.parse(await readBody(req)) as {
+        to?: string;
+        asset?: string;
+        amount?: number;
+      };
+      if (!body.to || !/^[GC][A-Z2-7]{55}$/.test(body.to))
+        return json(res, 400, { error: "to must be a G or C address" });
+      if (!body.asset || !TREASURY_ASSETS[body.asset])
+        return json(res, 400, { error: "asset must be USDC or EURC" });
+      const amount = Number(body.amount);
+      if (!(amount > 0) || amount > FUND_MAX)
+        return json(res, 400, {
+          error: `amount must be between 0 and ${FUND_MAX}`,
+        });
+      const hash = await fund(body.to, body.asset, amount);
+      console.log(`funded ${body.to} with ${amount} ${body.asset}`, hash);
+      return json(res, 200, { hash, asset: body.asset, amount });
+    }
     json(res, 404, { error: "not found" });
   } catch (err) {
     console.error(err);
@@ -523,4 +662,5 @@ createServer(async (req, res) => {
   console.log(
     `producer api on http://localhost:${PORT} as ${admin.publicKey()}`,
   );
+  ensureTrustlines().catch((e) => console.error("trustlines:", e));
 });
