@@ -23,8 +23,8 @@
 // to holders and keep the care bonus from decaying, but never raise it.
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
+    xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
 use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
@@ -38,6 +38,10 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const MAX_CLOCK_SKEW: u64 = 600;
 /// Marks kept on chain per batch for the chart.
 const MARK_HISTORY: u32 = 180;
+/// A published mark is only added to the history this long after the last
+/// one, so anyone calling `publish_mark` cannot flush the chart. Matches the
+/// keeper's default cadence.
+const MIN_MARK_INTERVAL: u64 = 600;
 /// Check-ins kept on chain per batch.
 const CHECKIN_HISTORY: u32 = 60;
 /// Longest check-in note, in bytes.
@@ -98,8 +102,9 @@ pub struct BatchConfig {
     pub humidity_max: u32,
 }
 
-/// One sensor reading. The signed payload is the 20-byte big-endian
-/// concatenation `batch_id:u32 | timestamp:u64 | temp_c:i32 | humidity:u32`.
+/// One sensor reading. The signed payload is the 52-byte big-endian
+/// concatenation `oracle_contract_id:[u8;32] | batch_id:u32 | timestamp:u64 |
+/// temp_c:i32 | humidity:u32`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reading {
@@ -411,9 +416,13 @@ impl ConditionOracle {
         in_range
     }
 
-    /// The exact bytes a sensor signs for `reading`.
+    /// The exact bytes a sensor signs for `reading`. Starts with this
+    /// contract's id, so a reading cannot be replayed on another deployment.
     pub fn reading_payload(e: &Env, reading: &Reading) -> Bytes {
         let mut b = Bytes::new(e);
+        // The address XDR is an 8-byte header (ScVal and ScAddress type)
+        // followed by the 32-byte contract id.
+        b.append(&e.current_contract_address().to_xdr(e).slice(8..));
         b.extend_from_array(&reading.batch_id.to_be_bytes());
         b.extend_from_array(&reading.timestamp.to_be_bytes());
         b.extend_from_array(&reading.temp_c.to_be_bytes());
@@ -479,6 +488,9 @@ impl ConditionOracle {
 
         let now = e.ledger().timestamp();
         let mut care = Self::care(e, batch_id);
+        // Settle the decay so far, so restarting the grace period never brings
+        // back bonus already lost.
+        care.bonus_bps = Self::care_multiplier(&care, now) - BPS;
         let mut bonus_bps = bonus_bps;
         if care.bonus_bps + bonus_bps > MAX_CARE_BONUS_BPS {
             bonus_bps = MAX_CARE_BONUS_BPS - care.bonus_bps;
@@ -518,11 +530,15 @@ impl ConditionOracle {
     // ---------- marks ----------
 
     /// Compute the mark now, store it in the batch's history and emit it.
-    /// Permissionless so a cron or the relayer can post one per epoch.
+    /// Permissionless so a cron or the relayer can post one per epoch. Within
+    /// MIN_MARK_INTERVAL of the last stored mark it only returns the mark.
     pub fn publish_mark(e: &Env, batch_id: u32) -> Mark {
         let mark = Self::mark(e, batch_id);
         let mut history: Vec<Mark> =
             e.storage().persistent().get(&DataKey::Marks(batch_id)).unwrap_or(Vec::new(e));
+        if history.last().is_some_and(|last| mark.timestamp < last.timestamp + MIN_MARK_INTERVAL) {
+            return mark;
+        }
         if history.len() >= MARK_HISTORY {
             history.remove(0);
         }
@@ -563,9 +579,10 @@ impl ConditionOracle {
         };
         let fee_per_share = config.fee_per_share_day * days;
 
-        let gross = config.fill_price * age_bps / BPS * condition_bps / BPS * care_bps / BPS
-            * producer_bps
-            / BPS;
+        // Multiply first, divide once: no rounding between factors. Even a
+        // u32::MAX curve point keeps this far inside i128.
+        let gross = config.fill_price * age_bps * condition_bps * care_bps * producer_bps
+            / (BPS * BPS * BPS * BPS);
         let value = if gross > fee_per_share { gross - fee_per_share } else { 0 };
 
         Breakdown {

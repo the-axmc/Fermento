@@ -282,6 +282,40 @@ fn fee_for_dex_bought_shares_counts_from_fill() {
 }
 
 #[test]
+fn redeeming_in_two_steps_charges_the_same_fee() {
+    let s = setup();
+    open_default(&s);
+    s.shares.buy(&14, &s.buyer, &20);
+    let now = s.env.ledger().timestamp();
+    s.env.ledger().set_timestamp(now + 365 * DAY);
+
+    s.shares.redeem(&14, &s.buyer, &10);
+    s.shares.redeem(&14, &s.buyer, &10);
+
+    // 0.01 * 365 * 20 = 73 USDC, as if redeemed at once.
+    assert_eq!(balance(&s.env, &s.usdc, &s.treasury), 73 * USDC);
+}
+
+#[test]
+fn shares_received_elsewhere_pay_from_the_fill_date() {
+    let s = setup();
+    open_default(&s);
+    s.shares.buy(&14, &s.buyer, &20);
+    let now = s.env.ledger().timestamp();
+    s.env.ledger().set_timestamp(now + 100 * DAY);
+
+    // A fresh buyer holding 1 share receives 19 old ones by plain transfer.
+    let second = Address::generate(&s.env);
+    token::StellarAssetClient::new(&s.env, &s.usdc).mint(&second, &(1_000 * USDC));
+    s.shares.buy(&14, &second, &1);
+    token::Client::new(&s.env, &s.share_token).transfer(&s.buyer, &second, &19);
+
+    // 1 share settled today, 19 since the fill 100 days ago, weighted:
+    // 95 days on 20 shares = 19 USDC.
+    assert_eq!(s.shares.accrued_fee(&14, &second, &20), 19 * USDC);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #605)")]
 fn redeem_before_maturity_panics() {
     let s = setup();
@@ -326,9 +360,11 @@ fn redeem_burns_shares_charges_fee_and_claims() {
     assert_eq!(last.units, 2);
     assert_eq!(last.caller, s.shares_addr);
 
+    // The 10 shares kept still owe their fee since purchase.
     let p = s.shares.get_position(&14, &s.buyer);
     assert_eq!(p.shares, 10);
-    assert_eq!(p.fee_paid_until, now + 365 * DAY);
+    assert_eq!(p.fee_paid_until, now);
+    assert_eq!(s.shares.accrued_fee(&14, &s.buyer, &10), 365 * USDC / 10);
 
     // 3.6 USDC held per share: 20 shares' worth moves to the claim.
     let held = s.shares.claim_escrow(&1).unwrap();
@@ -641,6 +677,44 @@ fn cancelling_returns_the_shares() {
     assert_eq!(balance(&s.env, &s.share_token, &s.buyer), 10);
     assert_eq!(s.shares.get_position(&14, &s.buyer).shares, 10);
     assert_eq!(s.shares.listings(&14).len(), 0);
+}
+
+/// Fills every listing slot of batch 14 with one-share listings at 1000 USDC.
+fn fill_listings(s: &Setup) -> Address {
+    let squatter = Address::generate(&s.env);
+    token::StellarAssetClient::new(&s.env, &s.usdc).mint(&squatter, &(1_000 * USDC));
+    s.shares.buy(&14, &squatter, &40);
+    for _ in 0..40 {
+        s.shares.list_for_sale(&14, &squatter, &1, &(1_000 * USDC));
+    }
+    squatter
+}
+
+#[test]
+fn a_cheaper_listing_takes_the_slot_of_the_dearest() {
+    let s = setup();
+    resale_setup(&s);
+    let squatter = fill_listings(&s);
+    assert_eq!(balance(&s.env, &s.share_token, &squatter), 0);
+
+    let id = s.shares.list_for_sale(&14, &s.buyer, &4, &(15 * USDC));
+
+    let open = s.shares.listings(&14);
+    assert_eq!(open.len(), 40);
+    assert_eq!(open.last().unwrap().id, id);
+    // The oldest dearest listing went back to its seller.
+    assert_eq!(open.first().unwrap().id, 2);
+    assert_eq!(balance(&s.env, &s.share_token, &squatter), 1);
+    assert_eq!(s.shares.get_position(&14, &squatter).shares, 1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #618)")]
+fn a_full_market_refuses_a_listing_no_cheaper_than_the_rest() {
+    let s = setup();
+    resale_setup(&s);
+    fill_listings(&s);
+    s.shares.list_for_sale(&14, &s.buyer, &4, &(1_000 * USDC));
 }
 
 #[test]

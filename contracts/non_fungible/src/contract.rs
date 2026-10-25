@@ -90,6 +90,9 @@ pub enum BatchRegistryError {
     TagLocked = 504,
     /// An attestation must cover at least one unit.
     InvalidAttestation = 505,
+    /// Claims would exceed the attested units, or an attestation would fall
+    /// below the units already claimed.
+    ExceedsAttested = 506,
 }
 
 // ################## EVENTS ##################
@@ -244,6 +247,12 @@ impl BatchRegistry {
         e.storage().instance().set(&BatchKey::ClaimCount, &claim_id);
 
         let claimed: u32 = e.storage().persistent().get(&BatchKey::Claimed(batch_id)).unwrap_or(0);
+        // Batches registered before attestations existed have none to check.
+        let attested: Option<Attestation> =
+            e.storage().persistent().get(&BatchKey::Attestation(batch_id));
+        if attested.is_some_and(|a| claimed + units > a.units) {
+            panic_with_error!(e, BatchRegistryError::ExceedsAttested);
+        }
         e.storage().persistent().set(&BatchKey::Claimed(batch_id), &(claimed + units));
         keep_key(e, &BatchKey::Claimed(batch_id));
 
@@ -310,13 +319,17 @@ impl BatchRegistry {
     // ---------- inspection ----------
 
     /// Record an independent inspection: the batch exists and holds `units`
-    /// units. `batch_shares` refuses to sell more units than this. A later
-    /// attestation replaces the earlier one (e.g. after regauging).
+    /// units. `batch_shares` refuses to sell more units than this, and claims
+    /// may not exceed it. A later attestation replaces the earlier one (e.g.
+    /// after regauging), but never below the units already claimed.
     #[only_role(caller, "inspector")]
     pub fn attest(e: &Env, batch_id: u32, units: u32, evidence: BytesN<32>, caller: Address) {
         Base::owner_of(e, batch_id);
         if units == 0 {
             panic_with_error!(e, BatchRegistryError::InvalidAttestation);
+        }
+        if units < Self::claimed_units(e, batch_id) {
+            panic_with_error!(e, BatchRegistryError::ExceedsAttested);
         }
         let record = Attestation {
             inspector: caller.clone(),

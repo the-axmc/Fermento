@@ -121,20 +121,40 @@ fn empty_curve_panics() {
 }
 
 #[test]
-fn payload_is_20_bytes_big_endian() {
+fn payload_is_contract_id_then_20_bytes_big_endian() {
     let s = setup();
     let r = reading(0x0102030405060708, 0x11121314, 0x21222324);
-    let payload = s.env.as_contract(&s.oracle.address, || {
-        ConditionOracle::reading_payload(&s.env, &r)
-    });
-    let mut raw = [0u8; 20];
+    // An oracle at a known address; the id bytes are what
+    // StrKey.decodeContract gives in scripts/sensor-sim.ts.
+    let at = Address::from_str(&s.env, "CAM52GOAFA6XF3JAZKTUIXZSRTELLRQBNXRUGNHOCYE33BSKV4LNOMAQ");
+    s.env.register_at(&at, ConditionOracle, (s.curator.clone(), s.curator.clone()));
+    let payload = s.env.as_contract(&at, || ConditionOracle::reading_payload(&s.env, &r));
+    let mut raw = [0u8; 52];
     payload.copy_into_slice(&mut raw);
     assert_eq!(
         raw,
         [
+            0x19, 0xdd, 0x19, 0xc0, 0x28, 0x3d, 0x72, 0xed, 0x20, 0xca, 0xa7, 0x44, 0x5f, 0x32,
+            0x8c, 0xc8, 0xb5, 0xc6, 0x01, 0x6d, 0xe3, 0x43, 0x34, 0xee, 0x16, 0x09, 0xbd, 0x86,
+            0x4a, 0xaf, 0x16, 0xd7, // contract id
             0, 0, 0, 14, 1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x21, 0x22, 0x23, 0x24
         ]
     );
+}
+
+#[test]
+#[should_panic]
+fn reading_signed_for_another_deployment_is_rejected() {
+    let s = setup();
+    register_14(&s);
+    let other = s.env.register(ConditionOracle, (s.curator.clone(), s.curator.clone()));
+    let r = reading(T0, 1_500, 7_000);
+    // Same sensor key, but signed over the other oracle's id.
+    let payload = s.env.as_contract(&other, || ConditionOracle::reading_payload(&s.env, &r));
+    let mut raw = std::vec![0u8; payload.len() as usize];
+    payload.copy_into_slice(&mut raw);
+    let sig = BytesN::from_array(&s.env, &s.sensor.sign(&raw).to_bytes());
+    s.oracle.post_reading(&14, &r, &sig);
 }
 
 #[test]
@@ -279,6 +299,19 @@ fn publish_mark_appends_history() {
     assert_eq!(history.get(0).unwrap().timestamp, T0);
 }
 
+#[test]
+fn publish_mark_keeps_one_mark_per_interval() {
+    let s = setup();
+    register_14(&s);
+    s.oracle.publish_mark(&14);
+    s.env.ledger().set_timestamp(T0 + 599);
+    s.oracle.publish_mark(&14);
+    assert_eq!(s.oracle.mark_history(&14).len(), 1);
+    s.env.ledger().set_timestamp(T0 + 600);
+    s.oracle.publish_mark(&14);
+    assert_eq!(s.oracle.mark_history(&14).len(), 2);
+}
+
 // ---------- check-ins, care and ratings ----------
 
 fn checkin(s: &Setup, producer: &Address, score: u32) -> i128 {
@@ -395,22 +428,26 @@ fn care_bonus_is_capped_and_decays_when_the_producer_goes_quiet() {
     let producer = Address::generate(&s.env);
     s.oracle.set_producer(&14, &producer, &s.curator);
     let mut care = 0;
+    // Visits 10 days apart, inside the grace period.
     for i in 0..5u64 {
-        s.env.ledger().set_timestamp(T0 + i * 30 * DAY);
+        s.env.ledger().set_timestamp(T0 + i * 10 * DAY);
         care = inspection(&s, 100);
     }
     // 5 x 500 would be 2 500; the cap is 2 000.
     assert_eq!(care, 12_000);
-    let last = T0 + 4 * 30 * DAY;
+    let last = T0 + 4 * 10 * DAY;
     // Within the grace period nothing is lost.
     s.env.ledger().set_timestamp(last + 14 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 12_000);
     // 10 days past it: 10 x 25 bps gone.
     s.env.ledger().set_timestamp(last + 24 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 11_750);
-    // A producer check-in restarts the grace period without adding bonus.
+    // A producer check-in restarts the grace period without adding bonus or
+    // bringing back what decayed.
     checkin(&s, &producer, 100);
-    assert_eq!(s.oracle.breakdown(&14).care_bps, 12_000);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 11_750);
+    s.env.ledger().set_timestamp(last + 38 * DAY);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 11_750);
     // Long silence returns to neutral, never below.
     s.env.ledger().set_timestamp(last + 400 * DAY);
     assert_eq!(s.oracle.breakdown(&14).care_bps, 10_000);

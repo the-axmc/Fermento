@@ -24,6 +24,7 @@ import {
   Contract,
   Keypair,
   Networks,
+  StrKey,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -90,17 +91,22 @@ const relayer = process.env.RELAYER_SECRET
 const server = new rpc.Server(RPC_URL);
 const oracle = new Contract(ORACLE_ID);
 
-/** 20-byte big-endian payload: batch_id u32 | timestamp u64 | temp_c i32 | humidity u32 */
+/**
+ * 52-byte big-endian payload: oracle contract id [u8; 32] | batch_id u32 |
+ * timestamp u64 | temp_c i32 | humidity u32. The contract id stops a reading
+ * from being replayed on another deployment.
+ */
 function payload(r: {
   timestamp: bigint;
   tempC: number;
   humidity: number;
 }): Buffer {
-  const b = Buffer.alloc(20);
-  b.writeUInt32BE(batchId, 0);
-  b.writeBigUInt64BE(r.timestamp, 4);
-  b.writeInt32BE(r.tempC, 12);
-  b.writeUInt32BE(r.humidity, 16);
+  const b = Buffer.alloc(52);
+  Buffer.from(StrKey.decodeContract(ORACLE_ID)).copy(b, 0);
+  b.writeUInt32BE(batchId, 32);
+  b.writeBigUInt64BE(r.timestamp, 36);
+  b.writeInt32BE(r.tempC, 44);
+  b.writeUInt32BE(r.humidity, 48);
   return b;
 }
 

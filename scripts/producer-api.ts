@@ -25,7 +25,11 @@
  * Env:
  *   ADMIN_KEY       Stellar CLI identity name holding the roles (default fermento-admin)
  *   ADMIN_SECRET    S... secret, used instead of the CLI identity when set
- *   ADMIN_TOKEN     shared secret for certification and inspection; unset = localhost only
+ *   ADMIN_TOKEN     shared secret for certification and inspection; a random one
+ *                   is printed at start when unset
+ *   WEB_AUTH_CONTRACT_ID  SEP-45 web auth contract for producer sign-in
+ *                   (default: the SDF test anchor's)
+ *   FUND_COOLDOWN_MINUTES, FUND_DAILY_MAX  faucet rationing (default 60, 1000)
  *   INSPECTOR_SECRET  S... secret of the inspector (holds the `inspector` role
  *                   on all three contracts); the admin key when unset
  *   KEEPER_MINUTES  oracle keeper period, 0 disables (default 10)
@@ -40,7 +44,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import { execSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   Address,
@@ -73,7 +83,9 @@ const UPLOADS_DIR = new URL("deploy/uploads/", ROOT);
 const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const PASSPHRASE = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
 const PORT = Number(process.env.PORT ?? 8787);
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+/** Unset: a fresh one is made and printed at start. */
+const ADMIN_TOKEN =
+  process.env.ADMIN_TOKEN || randomBytes(18).toString("base64url");
 const KEEPER_MINUTES = Number(process.env.KEEPER_MINUTES ?? 10);
 const FIRST_BATCH_ID = 100;
 /** Largest logo (data URL) and document (base64) accepted, in bytes. */
@@ -1287,6 +1299,183 @@ const fund = async (to: string, code: string, amount: number) => {
   return sent.hash;
 };
 
+/**
+ * The faucet is open to anyone, so it is rationed: one top-up per address
+ * every FUND_COOLDOWN_MINUTES, and at most FUND_DAILY_MAX of each asset a day.
+ */
+const FUND_COOLDOWN_MINUTES = Number(process.env.FUND_COOLDOWN_MINUTES ?? 60);
+const FUND_DAILY_MAX = Number(process.env.FUND_DAILY_MAX ?? 1_000);
+const lastFunded = new Map<string, number>();
+const fundedToday = new Map<string, { day: string; total: number }>();
+
+/** Why `to` may not receive `amount` of `code` now, or undefined. */
+const fundRefusal = (to: string, code: string, amount: number) => {
+  const since = Date.now() - (lastFunded.get(to) ?? 0);
+  if (since < FUND_COOLDOWN_MINUTES * 60_000) {
+    const wait = Math.ceil((FUND_COOLDOWN_MINUTES * 60_000 - since) / 60_000);
+    return `this account was topped up recently, try again in ${wait} min`;
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const today = fundedToday.get(code);
+  const total = today?.day === day ? today.total : 0;
+  if (total + amount > FUND_DAILY_MAX)
+    return `the daily ${code} allowance is used up, try again tomorrow`;
+  return undefined;
+};
+
+const recordFunding = (to: string, code: string, amount: number) => {
+  lastFunded.set(to, Date.now());
+  const day = new Date().toISOString().slice(0, 10);
+  const today = fundedToday.get(code);
+  const total = today?.day === day ? today.total : 0;
+  fundedToday.set(code, { day, total: total + amount });
+};
+
+/* ---------------------------------- Sign-in -------------------------------- */
+//
+// Producer routes act for a passkey account, so the caller proves it holds
+// that account the SEP-45 way. GET /api/auth returns a challenge: a call to
+// `web_auth_verify` on a SEP-45 web auth contract that needs the account's
+// authorization. The app signs that entry with the passkey and POSTs it back;
+// we replay the call in an enforcing simulation, which runs the account's own
+// signature check, and answer with a session token for that account.
+
+/** The SDF test anchor's web auth contract; any SEP-45 one works. */
+const WEB_AUTH_CONTRACT_ID =
+  process.env.WEB_AUTH_CONTRACT_ID ??
+  "CD3LA6RKF5D2FN2R2L57MWXLBRSEWWENE74YBEFZSSGNJRJGICFGQXMX";
+const CHALLENGE_SECONDS = 300;
+const SESSION_SECONDS = 3_600;
+/** Signs session tokens. New on every start, so a restart signs everyone out. */
+const sessionKey = randomBytes(32);
+const challenges = new Map<string, { account: string; exp: number }>();
+
+/** XDR `SorobanAuthorizationEntries`: a 4-byte count, then the entries. */
+const encodeEntries = (entries: xdr.SorobanAuthorizationEntry[]) => {
+  const count = Buffer.alloc(4);
+  count.writeUInt32BE(entries.length);
+  return Buffer.concat([count, ...entries.map((e) => e.toXDR())]).toString(
+    "base64",
+  );
+};
+
+const decodeEntries = (b64: string): xdr.SorobanAuthorizationEntry[] =>
+  (
+    xdr as unknown as {
+      SorobanAuthorizationEntries: {
+        fromXDR: (s: string, f: "base64") => xdr.SorobanAuthorizationEntry[];
+      };
+    }
+  ).SorobanAuthorizationEntries.fromXDR(b64, "base64");
+
+const webAuthCall = (
+  args: Record<string, string>,
+  auth: xdr.SorobanAuthorizationEntry[] = [],
+) =>
+  Operation.invokeContractFunction({
+    contract: WEB_AUTH_CONTRACT_ID,
+    function: "web_auth_verify",
+    args: [
+      nativeToScVal(args, {
+        type: Object.fromEntries(
+          Object.keys(args).map((k) => [k, ["symbol", "string"]]),
+        ),
+      }),
+    ],
+    auth,
+  });
+
+/** Simulate a web auth call with the admin as source, which covers its own entry. */
+const simulateWebAuth = async (
+  call: xdr.Operation,
+  mode: "record" | "enforce",
+) => {
+  const tx = new TransactionBuilder(
+    await server.getAccount(admin.publicKey()),
+    { fee: "100", networkPassphrase: PASSPHRASE },
+  )
+    .addOperation(call)
+    .setTimeout(60)
+    .build();
+  return server.simulateTransaction(tx, undefined, mode);
+};
+
+const issueChallenge = async (account: string, domain: string) => {
+  const now = Date.now() / 1000;
+  for (const [nonce, c] of challenges)
+    if (c.exp < now) challenges.delete(nonce);
+  const nonce = randomUUID();
+  const args = {
+    account,
+    home_domain: domain,
+    web_auth_domain: domain,
+    web_auth_domain_account: admin.publicKey(),
+    nonce,
+  };
+  const sim = await simulateWebAuth(webAuthCall(args), "record");
+  if (rpc.Api.isSimulationError(sim)) throw new Error(sim.error);
+  challenges.set(nonce, { account, exp: now + CHALLENGE_SECONDS });
+  return {
+    authorization_entries: encodeEntries(sim.result?.auth ?? []),
+    network_passphrase: PASSPHRASE,
+    web_auth_contract: WEB_AUTH_CONTRACT_ID,
+  };
+};
+
+/** Check a signed challenge; returns the account it proves, or throws. */
+const verifyChallenge = async (b64: string) => {
+  const entries = decodeEntries(b64);
+  const fn = entries[0]?.rootInvocation().function().contractFn();
+  if (
+    !fn ||
+    Address.fromScAddress(fn.contractAddress()).toString() !==
+      WEB_AUTH_CONTRACT_ID ||
+    fn.functionName().toString() !== "web_auth_verify"
+  )
+    throw new Error("not a challenge from this server");
+  const args = scValToNative(fn.args()[0]) as Record<string, string>;
+  const pending = challenges.get(args.nonce);
+  challenges.delete(args.nonce);
+  if (
+    !pending ||
+    pending.exp < Date.now() / 1000 ||
+    pending.account !== args.account ||
+    args.web_auth_domain_account !== admin.publicKey()
+  )
+    throw new Error("challenge unknown or expired");
+  // Enforcing mode fails unless every entry matches this very call and the
+  // account's entry carries a signature its own contract accepts.
+  const sim = await simulateWebAuth(webAuthCall(args, entries), "enforce");
+  if (rpc.Api.isSimulationError(sim))
+    throw new Error("the account did not sign the challenge");
+  return args.account;
+};
+
+const sign = (body: string) =>
+  createHmac("sha256", sessionKey).update(body).digest("base64url");
+
+const issueSession = (account: string) => {
+  const exp = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
+  const body = Buffer.from(JSON.stringify({ sub: account, exp })).toString(
+    "base64url",
+  );
+  return { token: `${body}.${sign(body)}`, exp };
+};
+
+const sameSecret = (a: string, b: string) =>
+  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+/** The account a request's session token belongs to, if valid. */
+const sessionAccount = (req: IncomingMessage) => {
+  const [body, mac] =
+    req.headers.authorization?.replace(/^Bearer /, "").split(".") ?? [];
+  if (!body || !mac || !sameSecret(sign(body), mac)) return undefined;
+  const { sub, exp } = JSON.parse(
+    Buffer.from(body, "base64url").toString(),
+  ) as { sub: string; exp: number };
+  return exp > Date.now() / 1000 ? sub : undefined;
+};
+
 /* ---------------------------------- Server --------------------------------- */
 
 const json = (res: ServerResponse, status: number, body: unknown) => {
@@ -1304,11 +1493,14 @@ const readBody = (req: IncomingMessage) =>
 const isAddress = (s: unknown): s is string =>
   typeof s === "string" && /^[GC][A-Z2-7]{55}$/.test(s);
 
-/** Review calls need ADMIN_TOKEN, or come from this machine when none is set. */
+/**
+ * Review calls need the admin token in `x-admin-token`. Every request reaches
+ * us from localhost through the Vite proxy, so the address proves nothing,
+ * and a custom header cannot be sent cross-site without a CORS preflight.
+ */
 const isAdmin = (req: IncomingMessage) => {
-  if (ADMIN_TOKEN) return req.headers["x-admin-token"] === ADMIN_TOKEN;
-  const ip = req.socket.remoteAddress ?? "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  const sent = req.headers["x-admin-token"];
+  return typeof sent === "string" && sameSecret(sent, ADMIN_TOKEN);
 };
 
 /** sha256 of an NFC tag serial, the value the registry stores. */
@@ -1322,6 +1514,33 @@ createServer(async (req, res) => {
   const path = url.pathname;
   const seg = path.split("/").filter(Boolean); // ["api", ...]
   try {
+    // ---- sign-in ----
+    if (req.method === "GET" && path === "/api/auth") {
+      const account = url.searchParams.get("account") ?? "";
+      const domain = url.searchParams.get("home_domain") ?? "";
+      if (!isAddress(account))
+        return json(res, 400, { error: "account must be a G or C address" });
+      if (!domain) return json(res, 400, { error: "home_domain is required" });
+      return json(
+        res,
+        200,
+        await issueChallenge(account, domain.slice(0, 120)),
+      );
+    }
+    if (req.method === "POST" && path === "/api/auth") {
+      const body = JSON.parse(await readBody(req)) as {
+        authorization_entries?: string;
+      };
+      try {
+        const account = await verifyChallenge(body.authorization_entries ?? "");
+        return json(res, 200, issueSession(account));
+      } catch (err) {
+        return json(res, 401, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // ---- batches ----
     if (req.method === "GET" && path === "/api/batches") {
       return json(res, 200, loadStore().map(publicBatch));
@@ -1358,8 +1577,11 @@ createServer(async (req, res) => {
           return json(res, 400, { error: "shares and price must be positive" });
         if (new Date(body.ready) < new Date(body.started))
           return json(res, 400, { error: "ready date is before start" });
-        if (body.producerAddress && !isAddress(body.producerAddress))
-          return json(res, 400, { error: "producerAddress is not an address" });
+        // The listing names the signed-in account as its producer.
+        const producerAddress = sessionAccount(req);
+        if (!producerAddress)
+          return json(res, 401, { error: "sign in to list a batch" });
+        body.producerAddress = producerAddress;
         const origin =
           req.headers["x-forwarded-origin"]?.toString() ??
           `${req.headers.origin ?? "https://fermento.app"}`;
@@ -1389,12 +1611,14 @@ createServer(async (req, res) => {
       });
     }
     if (req.method === "PUT" && seg[1] === "producers" && seg.length === 3) {
-      // Profile text is off chain; the address is trusted here because the
-      // page only lets the signed-in account edit its own profile. Anything
-      // with value (check-ins, tags, ratings) is authorized on chain.
+      // Profile text is off chain, so only a session for this very account
+      // may edit it. Anything with value (check-ins, tags, ratings) is
+      // authorized on chain.
       const address = decodeURIComponent(seg[2]);
       if (!isAddress(address))
         return json(res, 400, { error: "address must be a G or C address" });
+      if (sessionAccount(req) !== address)
+        return json(res, 401, { error: "sign in as this producer to edit" });
       const body = JSON.parse(await readBody(req)) as Partial<Producer>;
       const patch: Partial<Producer> = {};
       if (typeof body.name === "string" && body.name.trim())
@@ -1424,6 +1648,8 @@ createServer(async (req, res) => {
     // ---- certification ----
     if (req.method === "POST" && path === "/api/certification") {
       const body = JSON.parse(await readBody(req)) as CertificationRequest;
+      if (sessionAccount(req) !== body.address)
+        return json(res, 401, { error: "sign in as this producer to apply" });
       const p = applyForCertification(body);
       console.log(
         `certification requested by ${p.address} (${p.certification?.legalName})`,
@@ -1532,7 +1758,14 @@ createServer(async (req, res) => {
         return json(res, 400, {
           error: `amount must be between 0 and ${FUND_MAX}`,
         });
-      const hash = await fund(body.to, body.asset, amount);
+      const refusal = fundRefusal(body.to, body.asset, amount);
+      if (refusal) return json(res, 429, { error: refusal });
+      // Counted before sending so parallel requests cannot slip through.
+      recordFunding(body.to, body.asset, amount);
+      const hash = await fund(body.to, body.asset, amount).catch((err) => {
+        lastFunded.delete(body.to!);
+        throw err;
+      });
       console.log(`funded ${body.to} with ${amount} ${body.asset}`, hash);
       return json(res, 200, { hash, asset: body.asset, amount });
     }
@@ -1545,6 +1778,8 @@ createServer(async (req, res) => {
   console.log(
     `producer api on http://localhost:${PORT} as ${admin.publicKey()}`,
   );
+  if (!process.env.ADMIN_TOKEN)
+    console.log(`admin token for /inspect and reviews: ${ADMIN_TOKEN}`);
   ensureTrustlines().catch((e) => console.error("trustlines:", e));
   if (KEEPER_MINUTES > 0) {
     console.log(`oracle keeper every ${KEEPER_MINUTES} min`);

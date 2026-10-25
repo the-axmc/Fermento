@@ -4,6 +4,7 @@ import FermentIcon from "../components/FermentIcons";
 import type { Kind } from "../data/batches";
 import { useAccount } from "../hooks/useAccount";
 import { useProducer } from "../hooks/useProducer";
+import { fetchAs } from "../lib/apiAuth";
 
 /* ---------------------------------- Theme --------------------------------- */
 
@@ -197,6 +198,7 @@ const AddFerment: React.FC = () => {
   };
 
   const problems = (): string | null => {
+    if (!account.address) return "Sign in first so the batch is yours.";
     if (!d.name.trim()) return "Give the batch a name.";
     if (!d.producer.trim()) return "Who makes it? Add the producer.";
     if (!d.origin.trim()) return "Where is it from?";
@@ -217,7 +219,7 @@ const AddFerment: React.FC = () => {
     setBusy("list");
     setError(null);
     try {
-      const r = await fetch("/api/batches", {
+      const r = await fetchAs(account.address!, "/api/batches", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -230,7 +232,6 @@ const AddFerment: React.FC = () => {
           description: d.description.trim(),
           origin: d.origin.trim(),
           producer: d.producer.trim(),
-          producerAddress: account.address,
           shares: Number(d.shares),
           priceEur: Number(d.price),
           started: d.started,
@@ -888,7 +889,7 @@ const AddFerment: React.FC = () => {
               : "Registering mints the batch token and the cellar sensor, and names you as its producer. About half a minute on testnet."}
             {account.address
               ? " Your account signs the check-ins and the NFC card."
-              : " Sign in first so the batch is yours."}
+              : " Sign in first: the batch is listed for your account."}
           </p>
         </div>
       </div>
