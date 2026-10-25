@@ -275,3 +275,140 @@ fn publish_mark_appends_history() {
     assert_eq!(history.get(1).unwrap(), m);
     assert_eq!(history.get(0).unwrap().timestamp, T0);
 }
+
+// ---------- check-ins, care and ratings ----------
+
+fn checkin(s: &Setup, producer: &Address, score: u32) -> i128 {
+    s.oracle.post_checkin(
+        &14,
+        producer,
+        &Symbol::new(&s.env, "lab"),
+        &soroban_sdk::String::from_str(&s.env, "pH down to 3.2, sugar at 4 Bx."),
+        &score,
+    )
+}
+
+#[test]
+fn checkin_by_producer_raises_the_mark() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    assert_eq!(s.oracle.producer(&14), Some(producer.clone()));
+
+    let before = s.oracle.mark(&14).value;
+    let care = checkin(&s, &producer, 100);
+    // One perfect check-in: 1.025x.
+    assert_eq!(care, 10_250);
+    let b = s.oracle.breakdown(&14);
+    assert_eq!(b.care_bps, 10_250);
+    assert_eq!(b.checkins, 1);
+    assert_eq!(b.value, before * 10_250 / 10_000);
+    assert_eq!(s.oracle.mark(&14).value, b.value);
+
+    let history = s.oracle.checkins(&14);
+    assert_eq!(history.len(), 1);
+    let c = history.get(0).unwrap();
+    assert_eq!(c.score, 100);
+    assert_eq!(c.bonus_bps, 250);
+    assert_eq!(c.poster, producer);
+    assert_eq!(c.kind, Symbol::new(&s.env, "lab"));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #708)")]
+fn checkin_by_stranger_panics() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    let stranger = Address::generate(&s.env);
+    checkin(&s, &stranger, 50);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #708)")]
+fn checkin_without_producer_panics() {
+    let s = setup();
+    register_14(&s);
+    checkin(&s, &Address::generate(&s.env), 50);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #709)")]
+fn checkin_score_over_100_panics() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    checkin(&s, &producer, 101);
+}
+
+#[test]
+fn second_checkin_same_day_is_recorded_but_not_rewarded() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    checkin(&s, &producer, 100);
+    s.env.ledger().set_timestamp(T0 + 3600);
+    assert_eq!(checkin(&s, &producer, 100), 10_250);
+    assert_eq!(s.oracle.checkins(&14).len(), 2);
+    assert_eq!(s.oracle.get_care(&14).count, 2);
+    // A day later it counts again, scaled by the score.
+    s.env.ledger().set_timestamp(T0 + DAY + 3600);
+    assert_eq!(checkin(&s, &producer, 40), 10_350);
+}
+
+#[test]
+fn care_bonus_is_capped_and_decays_when_the_producer_goes_quiet() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    let mut care = 0;
+    for i in 0..10u64 {
+        s.env.ledger().set_timestamp(T0 + i * DAY);
+        care = checkin(&s, &producer, 100);
+    }
+    // 10 x 250 would be 2 500; the cap is 2 000.
+    assert_eq!(care, 12_000);
+    let last = T0 + 9 * DAY;
+    // Within the grace period nothing is lost.
+    s.env.ledger().set_timestamp(last + 14 * DAY);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 12_000);
+    // 10 days past it: 10 x 25 bps gone.
+    s.env.ledger().set_timestamp(last + 24 * DAY);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 11_750);
+    // Long silence returns to neutral, never below.
+    s.env.ledger().set_timestamp(last + 400 * DAY);
+    assert_eq!(s.oracle.breakdown(&14).care_bps, 10_000);
+}
+
+#[test]
+fn producer_rating_scales_the_mark() {
+    let s = setup();
+    register_14(&s);
+    let producer = Address::generate(&s.env);
+    s.oracle.set_producer(&14, &producer, &s.curator);
+    assert_eq!(s.oracle.rating(&producer), None);
+    let neutral = s.oracle.mark(&14).value;
+
+    s.oracle.set_rating(&producer, &11_000, &true, &s.curator);
+    let r = s.oracle.rating(&producer).unwrap();
+    assert!(r.certified);
+    assert_eq!(r.index_bps, 11_000);
+    let b = s.oracle.breakdown(&14);
+    assert_eq!(b.producer_bps, 11_000);
+    assert_eq!(b.value, neutral * 11_000 / 10_000);
+
+    s.oracle.set_rating(&producer, &9_000, &false, &s.curator);
+    assert_eq!(s.oracle.breakdown(&14).value, neutral * 9_000 / 10_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #711)")]
+fn rating_outside_band_panics() {
+    let s = setup();
+    s.oracle.set_rating(&Address::generate(&s.env), &25_000, &true, &s.curator);
+}

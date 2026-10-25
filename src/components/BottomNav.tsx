@@ -46,7 +46,7 @@ const items: Item[] = [
   {
     to: "/portfolio",
     label: "Portfolio",
-    match: ["/portfolio"],
+    match: ["/portfolio", "/producer", "/certify"],
     icon: (
       <svg {...iconProps}>
         <path d="M7 3h10c1.6 3 1.6 15 0 18H7C5.4 18 5.4 6 7 3z" />

@@ -144,3 +144,57 @@ fn unpause_restores_transfer() {
     s.client.transfer(&platform, &other, &14);
     assert_eq!(s.client.owner_of(&14), other);
 }
+
+// ---------- producer and NFC tag ----------
+
+use soroban_sdk::BytesN;
+
+fn tag(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
+#[test]
+fn producer_links_a_tag_and_it_resolves_back() {
+    let s = setup();
+    let platform = Address::generate(&s.env);
+    let producer = Address::generate(&s.env);
+    s.client.register_batch(&platform, &14, &String::from_str(&s.env, "u"), &s.minter);
+    assert_eq!(s.client.producer(&14), None);
+    s.client.set_producer(&14, &producer, &s.minter);
+    assert_eq!(s.client.producer(&14), Some(producer.clone()));
+
+    assert_eq!(s.client.tag(&14), None);
+    s.client.link_tag(&14, &producer, &tag(&s.env, 1));
+    assert_eq!(s.client.tag(&14), Some(tag(&s.env, 1)));
+    assert_eq!(s.client.batch_of_tag(&tag(&s.env, 1)), Some(14));
+
+    // Re-linking replaces the tag and frees the old one.
+    s.client.link_tag(&14, &producer, &tag(&s.env, 2));
+    assert_eq!(s.client.tag(&14), Some(tag(&s.env, 2)));
+    assert_eq!(s.client.batch_of_tag(&tag(&s.env, 1)), None);
+    assert_eq!(s.client.batch_of_tag(&tag(&s.env, 2)), Some(14));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #502)")]
+fn stranger_cannot_link_a_tag() {
+    let s = setup();
+    let platform = Address::generate(&s.env);
+    s.client.register_batch(&platform, &14, &String::from_str(&s.env, "u"), &s.minter);
+    s.client.set_producer(&14, &Address::generate(&s.env), &s.minter);
+    s.client.link_tag(&14, &Address::generate(&s.env), &tag(&s.env, 1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #503)")]
+fn a_tag_binds_to_one_batch_only() {
+    let s = setup();
+    let platform = Address::generate(&s.env);
+    let producer = Address::generate(&s.env);
+    for id in [14u32, 15] {
+        s.client.register_batch(&platform, &id, &String::from_str(&s.env, "u"), &s.minter);
+        s.client.set_producer(&id, &producer, &s.minter);
+    }
+    s.client.link_tag(&14, &producer, &tag(&s.env, 1));
+    s.client.link_tag(&15, &producer, &tag(&s.env, 1));
+}

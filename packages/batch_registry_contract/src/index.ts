@@ -47,6 +47,7 @@ export interface UnitClaim {
 
 
 
+
 export const BatchRegistryError = {
   /**
    * A claim must redeem at least one unit.
@@ -55,7 +56,15 @@ export const BatchRegistryError = {
   /**
    * No claim exists with this id.
    */
-  501: {message:"ClaimNotFound"}
+  501: {message:"ClaimNotFound"},
+  /**
+   * The caller is not the producer of this batch.
+   */
+  502: {message:"NotProducer"},
+  /**
+   * This tag is already bound to another batch.
+   */
+  503: {message:"TagTaken"}
 }
 
 export const RoleTransferError = {
@@ -170,6 +179,12 @@ export const NonFungibleTokenError = {
 }
 
 export interface Client {
+  /**
+   * Construct and simulate a tag transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Tag bound to a batch, if any.
+   */
+  tag: ({batch_id}: {batch_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<Buffer>>>
+
   /**
    * Construct and simulate a burn transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    */
@@ -292,6 +307,14 @@ export interface Client {
   has_role: ({account, role}: {account: string, role: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u32>>>
 
   /**
+   * Construct and simulate a link_tag transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Bind a physical NFC tag to a batch. `tag` is the sha256 of the tag's
+   * serial number, so the chain never carries the raw serial. Authorized by
+   * the producer's own account. Re-linking replaces the previous tag.
+   */
+  link_tag: ({batch_id, producer, tag}: {batch_id: u32, producer: string, tag: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
+
+  /**
    * Construct and simulate a owner_of transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns the owner of the token with `token_id`.
    * 
@@ -306,6 +329,11 @@ export interface Client {
    * exist.
    */
   owner_of: ({token_id}: {token_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<string>>
+
+  /**
+   * Construct and simulate a producer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   */
+  producer: ({batch_id}: {batch_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
 
   /**
    * Construct and simulate a transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -401,6 +429,12 @@ export interface Client {
   revoke_role: ({account, role, caller}: {account: string, role: string, caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
+   * Construct and simulate a batch_of_tag transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Batch a tapped tag belongs to, for the verification page.
+   */
+  batch_of_tag: ({tag}: {tag: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u32>>>
+
+  /**
    * Construct and simulate a get_approved transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns the account approved for the token with `token_id`.
    * 
@@ -439,6 +473,12 @@ export interface Client {
    * ID is not found in the global enumeration.
    */
   get_token_id: ({index}: {index: u32}, options?: MethodOptions) => Promise<AssembledTransaction<u32>>
+
+  /**
+   * Construct and simulate a set_producer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Name the producer account of a batch, which may then bind an NFC tag.
+   */
+  set_producer: ({batch_id, producer, caller}: {batch_id: u32, producer: string, caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<null>>
 
   /**
    * Construct and simulate a total_supply transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -745,6 +785,8 @@ export class Client extends ContractClient {
   constructor(public readonly options: ContractClientOptions) {
     super(
       new ContractSpec([ "AAAAAQAAAD9BIHVuaXQgY2xhaW0sIHZlcmlmaWFibGUgZnJvbSBhIFFSIGNvZGUgcG9pbnRpbmcgYXQgYGNsYWltX2lkYC4AAAAAAAAAAAlVbml0Q2xhaW0AAAAAAAAEAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAAAAAAAB2NsYWltZXIAAAAAEwAAAAAAAAAGbGVkZ2VyAAAAAAAEAAAAAAAAAAV1bml0cwAAAAAAAAQ=",
+        "AAAAAAAAAB1UYWcgYm91bmQgdG8gYSBiYXRjaCwgaWYgYW55LgAAAAAAAAN0YWcAAAAAAQAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAA+gAAAPuAAAAIA==",
+        "AAAABQAAAAAAAAAAAAAACVRhZ0xpbmtlZAAAAAAAAAEAAAAKdGFnX2xpbmtlZAAAAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAQAAAAAAAAAIcHJvZHVjZXIAAAATAAAAAAAAAAAAAAADdGFnAAAAA+4AAAAgAAAAAAAAAAI=",
         "AAAAAAAAAAAAAAAEYnVybgAAAAIAAAAAAAAABGZyb20AAAATAAAAAAAAAAh0b2tlbl9pZAAAAAQAAAAA",
         "AAAAAAAAAEVNaW50IGEgYmF0Y2ggdG9rZW4gd2l0aG91dCBtZXRhZGF0YS4gS2VwdCBmb3IgdGhlIGV4aXN0aW5nIEhvbWUgcGFnZS4AAAAAAAAEbWludAAAAAMAAAAAAAAAAnRvAAAAAAATAAAAAAAAAAh0b2tlbl9pZAAAAAQAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
         "AAAAAAAAAFtSZXR1cm5zIHRoZSB0b2tlbiBjb2xsZWN0aW9uIG5hbWUuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gdGhlIFNvcm9iYW4gZW52aXJvbm1lbnQuAAAAAARuYW1lAAAAAAAAAAEAAAAQ",
@@ -759,7 +801,9 @@ export class Client extends ContractClient {
         "AAAAAAAAAAAAAAAHdW5wYXVzZQAAAAABAAAAAAAAAAZjYWxsZXIAAAAAABMAAAAA",
         "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAACAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAAAAAACG9wZXJhdG9yAAAAEwAAAAA=",
         "AAAAAAAAAXJSZXR1cm5zIGBTb21lKGluZGV4KWAgaWYgdGhlIGFjY291bnQgaGFzIHRoZSBzcGVjaWZpZWQgcm9sZSwKd2hlcmUgYGluZGV4YCBpcyB0aGUgcG9zaXRpb24gb2YgdGhlIGFjY291bnQgZm9yIHRoYXQgcm9sZSwKYW5kIGNhbiBiZSB1c2VkIHRvIHF1ZXJ5IFtgQWNjZXNzQ29udHJvbDo6Z2V0X3JvbGVfbWVtYmVyKClgXS4KUmV0dXJucyBgTm9uZWAgaWYgdGhlIGFjY291bnQgZG9lcyBub3QgaGF2ZSB0aGUgc3BlY2lmaWVkIHJvbGUuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byBjaGVjay4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byBjaGVjayBmb3IuAAAAAAAIaGFzX3JvbGUAAAACAAAAAAAAAAdhY2NvdW50AAAAABMAAAAAAAAABHJvbGUAAAARAAAAAQAAA+gAAAAE",
+        "AAAAAAAAAM5CaW5kIGEgcGh5c2ljYWwgTkZDIHRhZyB0byBhIGJhdGNoLiBgdGFnYCBpcyB0aGUgc2hhMjU2IG9mIHRoZSB0YWcncwpzZXJpYWwgbnVtYmVyLCBzbyB0aGUgY2hhaW4gbmV2ZXIgY2FycmllcyB0aGUgcmF3IHNlcmlhbC4gQXV0aG9yaXplZCBieQp0aGUgcHJvZHVjZXIncyBvd24gYWNjb3VudC4gUmUtbGlua2luZyByZXBsYWNlcyB0aGUgcHJldmlvdXMgdGFnLgAAAAAACGxpbmtfdGFnAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAhwcm9kdWNlcgAAABMAAAAAAAAAA3RhZwAAAAPuAAAAIAAAAAA=",
         "AAAAAAAAAOVSZXR1cm5zIHRoZSBvd25lciBvZiB0aGUgdG9rZW4gd2l0aCBgdG9rZW5faWRgLgoKIyBBcmd1bWVudHMKCiogYGVgIC0gQWNjZXNzIHRvIHRoZSBTb3JvYmFuIGVudmlyb25tZW50LgoqIGB0b2tlbl9pZGAgLSBUb2tlbiBJRCBhcyBhIG51bWJlci4KCiMgRXJyb3JzCgoqIFtgTm9uRnVuZ2libGVUb2tlbkVycm9yOjpOb25FeGlzdGVudFRva2VuYF0gLSBJZiB0aGUgdG9rZW4gZG9lcyBub3QKZXhpc3QuAAAAAAAACG93bmVyX29mAAAAAQAAAAAAAAAIdG9rZW5faWQAAAAEAAAAAQAAABM=",
+        "AAAAAAAAAAAAAAAIcHJvZHVjZXIAAAABAAAAAAAAAAhiYXRjaF9pZAAAAAQAAAABAAAD6AAAABM=",
         "AAAAAAAAAAAAAAAIdHJhbnNmZXIAAAADAAAAAAAAAARmcm9tAAAAEwAAAAAAAAACdG8AAAAAABMAAAAAAAAACHRva2VuX2lkAAAABAAAAAA=",
         "AAAAAAAAAAAAAAAJYnVybl9mcm9tAAAAAAAAAwAAAAAAAAAHc3BlbmRlcgAAAAATAAAAAAAAAARmcm9tAAAAEwAAAAAAAAAIdG9rZW5faWQAAAAEAAAAAA==",
         "AAAAAAAAAE9SZXR1cm5zIHRoZSBhZG1pbiBhY2NvdW50LgoKIyBBcmd1bWVudHMKCiogYGVgIC0gQWNjZXNzIHRvIFNvcm9iYW4gZW52aXJvbm1lbnQuAAAAAAlnZXRfYWRtaW4AAAAAAAAAAAAAAQAAA+gAAAAT",
@@ -770,9 +814,11 @@ export class Client extends ContractClient {
         "AAAAAAAAAj5HcmFudHMgYSByb2xlIHRvIGFuIGFjY291bnQuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byBncmFudCB0aGUgcm9sZSB0by4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byBncmFudC4KKiBgY2FsbGVyYCAtIFRoZSBhZGRyZXNzIG9mIHRoZSBjYWxsZXIsIG11c3QgYmUgdGhlIGFkbWluIG9yIGhhdmUgdGhlCmBSb2xlQWRtaW5gIGZvciB0aGUgYHJvbGVgLgoKIyBFcnJvcnMKCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlVuYXV0aG9yaXplZGBdIC0gSWYgdGhlIGNhbGxlciBkb2VzIG5vdCBoYXZlCmVub3VnaCBwcml2aWxlZ2VzLgoqIFtgQWNjZXNzQ29udHJvbEVycm9yOjpNYXhSb2xlc0V4Y2VlZGVkYF0gLSBJZiBhZGRpbmcgYSBuZXcgcm9sZSB3b3VsZApleGNlZWQgdGhlIG1heGltdW0gYWxsb3dlZCBudW1iZXIgb2Ygcm9sZXMuCgojIEV2ZW50cwoKKiB0b3BpY3MgLSBgWyJyb2xlX2dyYW50ZWQiLCByb2xlOiBTeW1ib2wsIGFjY291bnQ6IEFkZHJlc3NdYAoqIGRhdGEgLSBgW2NhbGxlcjogQWRkcmVzc11gAAAAAAAKZ3JhbnRfcm9sZQAAAAAAAwAAAAAAAAAHYWNjb3VudAAAAAATAAAAAAAAAARyb2xlAAAAEQAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAA==",
         "AAAAAAAAArdSZXZva2VzIGEgcm9sZSBmcm9tIGFuIGFjY291bnQuClRvIHJldm9rZSB0aGUgY2FsbGVyJ3Mgb3duIHJvbGUsIHVzZQpbYEFjY2Vzc0NvbnRyb2w6OnJlbm91bmNlX3JvbGUoKWBdIGluc3RlYWQuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgYWNjb3VudGAgLSBUaGUgYWNjb3VudCB0byByZXZva2UgdGhlIHJvbGUgZnJvbS4KKiBgcm9sZWAgLSBUaGUgcm9sZSB0byByZXZva2UuCiogYGNhbGxlcmAgLSBUaGUgYWRkcmVzcyBvZiB0aGUgY2FsbGVyLCBtdXN0IGJlIHRoZSBhZG1pbiBvciBoYXMgdGhlCmBSb2xlQWRtaW5gIGZvciB0aGUgYHJvbGVgLgoKIyBFcnJvcnMKCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlVuYXV0aG9yaXplZGBdIC0gSWYgdGhlIGBjYWxsZXJgIGRvZXMgbm90IGhhdmUKZW5vdWdoIHByaXZpbGVnZXMuCiogW2BBY2Nlc3NDb250cm9sRXJyb3I6OlJvbGVOb3RIZWxkYF0gLSBJZiB0aGUgYGFjY291bnRgIGRvZXNuJ3QgaGF2ZQp0aGUgcm9sZS4KKiBbYEFjY2Vzc0NvbnRyb2xFcnJvcjo6Um9sZUlzRW1wdHlgXSAtIElmIHRoZSByb2xlIGhhcyBubyBtZW1iZXJzLgoKIyBFdmVudHMKCiogdG9waWNzIC0gYFsicm9sZV9yZXZva2VkIiwgcm9sZTogU3ltYm9sLCBhY2NvdW50OiBBZGRyZXNzXWAKKiBkYXRhIC0gYFtjYWxsZXI6IEFkZHJlc3NdYAAAAAALcmV2b2tlX3JvbGUAAAAAAwAAAAAAAAAHYWNjb3VudAAAAAATAAAAAAAAAARyb2xlAAAAEQAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAA==",
         "AAAABQAAAAAAAAAAAAAAEUJhdGNoU3RhZ2VDaGFuZ2VkAAAAAAAAAQAAABNiYXRjaF9zdGFnZV9jaGFuZ2VkAAAAAAIAAAAAAAAACGJhdGNoX2lkAAAABAAAAAEAAAAAAAAABXN0YWdlAAAAAAAAEQAAAAAAAAAC",
-        "AAAABAAAAAAAAAAAAAAAEkJhdGNoUmVnaXN0cnlFcnJvcgAAAAAAAgAAACZBIGNsYWltIG11c3QgcmVkZWVtIGF0IGxlYXN0IG9uZSB1bml0LgAAAAAACVplcm9Vbml0cwAAAAAAAfQAAAAdTm8gY2xhaW0gZXhpc3RzIHdpdGggdGhpcyBpZC4AAAAAAAANQ2xhaW1Ob3RGb3VuZAAAAAAAAfU=",
+        "AAAABAAAAAAAAAAAAAAAEkJhdGNoUmVnaXN0cnlFcnJvcgAAAAAABAAAACZBIGNsYWltIG11c3QgcmVkZWVtIGF0IGxlYXN0IG9uZSB1bml0LgAAAAAACVplcm9Vbml0cwAAAAAAAfQAAAAdTm8gY2xhaW0gZXhpc3RzIHdpdGggdGhpcyBpZC4AAAAAAAANQ2xhaW1Ob3RGb3VuZAAAAAAAAfUAAAAtVGhlIGNhbGxlciBpcyBub3QgdGhlIHByb2R1Y2VyIG9mIHRoaXMgYmF0Y2guAAAAAAAAC05vdFByb2R1Y2VyAAAAAfYAAAArVGhpcyB0YWcgaXMgYWxyZWFkeSBib3VuZCB0byBhbm90aGVyIGJhdGNoLgAAAAAIVGFnVGFrZW4AAAH3",
+        "AAAAAAAAADlCYXRjaCBhIHRhcHBlZCB0YWcgYmVsb25ncyB0bywgZm9yIHRoZSB2ZXJpZmljYXRpb24gcGFnZS4AAAAAAAAMYmF0Y2hfb2ZfdGFnAAAAAQAAAAAAAAADdGFnAAAAA+4AAAAgAAAAAQAAA+gAAAAE",
         "AAAAAAAAAPFSZXR1cm5zIHRoZSBhY2NvdW50IGFwcHJvdmVkIGZvciB0aGUgdG9rZW4gd2l0aCBgdG9rZW5faWRgLgoKIyBBcmd1bWVudHMKCiogYGVgIC0gQWNjZXNzIHRvIHRoZSBTb3JvYmFuIGVudmlyb25tZW50LgoqIGB0b2tlbl9pZGAgLSBUb2tlbiBJRCBhcyBhIG51bWJlci4KCiMgRXJyb3JzCgoqIFtgTm9uRnVuZ2libGVUb2tlbkVycm9yOjpOb25FeGlzdGVudFRva2VuYF0gLSBJZiB0aGUgdG9rZW4gZG9lcyBub3QKZXhpc3QuAAAAAAAADGdldF9hcHByb3ZlZAAAAAEAAAAAAAAACHRva2VuX2lkAAAABAAAAAEAAAPoAAAAEw==",
         "AAAAAAAAAtBSZXR1cm5zIHRoZSBgdG9rZW5faWRgIGF0IGEgZ2l2ZW4gYGluZGV4YCBpbiB0aGUgZ2xvYmFsIHRva2VuIGxpc3QuClVzZSBhbG9uZyB3aXRoIFtgTm9uRnVuZ2libGVFbnVtZXJhYmxlOjp0b3RhbF9zdXBwbHlgXSB0byBlbnVtZXJhdGUKYWxsIHRoZSB0b2tlbnMgaW4gdGhlIGNvbnRyYWN0LgoKQSBmdW5jdGlvbiB0byBnZXQgYWxsIHRva2VucyBvZiBhIGNvbnRyYWN0IGlzIG5vdCBwcm92aWRlZCBiZWNhdXNlIHRoYXQKd291bGQgYmUgdW5ib3VuZGVkLiBUbyBlbnVtZXJhdGUgYWxsIHRva2VucyBvZiBhIGNvbnRyYWN0LCB1c2UKW2BOb25GdW5naWJsZUVudW1lcmFibGU6OnRvdGFsX3N1cHBseWBdIHRvIGdldCB0aGUgdG90YWwgbnVtYmVyIG9mCnRva2VucyBhbmQgdGhlbiB1c2UgW2BOb25GdW5naWJsZUVudW1lcmFibGU6OmdldF90b2tlbl9pZGBdIHRvIHJldHJpZXZlCmVhY2ggdG9rZW4gb25lIGJ5IG9uZS4KCiMgQXJndW1lbnRzCgoqIGBlYCAtIEFjY2VzcyB0byB0aGUgU29yb2JhbiBlbnZpcm9ubWVudC4KKiBgaW5kZXhgIC0gSW5kZXggb2YgdGhlIHRva2VuIGluIHRoZSBnbG9iYWwgbGlzdC4KCiMgRXJyb3JzCgoqIFtgY3JhdGU6Om5vbl9mdW5naWJsZTo6Tm9uRnVuZ2libGVUb2tlbkVycm9yOjpUb2tlbk5vdEZvdW5kSW5HbG9iYWxMaXN0YF0gLSBXaGVuIHRoZSB0b2tlbgpJRCBpcyBub3QgZm91bmQgaW4gdGhlIGdsb2JhbCBlbnVtZXJhdGlvbi4AAAAMZ2V0X3Rva2VuX2lkAAAAAQAAAAAAAAAFaW5kZXgAAAAAAAAEAAAAAQAAAAQ=",
+        "AAAAAAAAAEVOYW1lIHRoZSBwcm9kdWNlciBhY2NvdW50IG9mIGEgYmF0Y2gsIHdoaWNoIG1heSB0aGVuIGJpbmQgYW4gTkZDIHRhZy4AAAAAAAAMc2V0X3Byb2R1Y2VyAAAAAwAAAAAAAAAIYmF0Y2hfaWQAAAAEAAAAAAAAAAhwcm9kdWNlcgAAABMAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAA=",
         "AAAAAAAAAHNSZXR1cm5zIHRoZSB0b3RhbCBhbW91bnQgb2YgdG9rZW5zIHN0b3JlZCBieSB0aGUgY29udHJhY3QuCgojIEFyZ3VtZW50cwoKKiBgZWAgLSBBY2Nlc3MgdG8gdGhlIFNvcm9iYW4gZW52aXJvbm1lbnQuAAAAAAx0b3RhbF9zdXBwbHkAAAAAAAAAAQAAAAQ=",
         "AAAAAAAAAAAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAQAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAGcGF1c2VyAAAAAAATAAAAAAAAAAh1cGdyYWRlcgAAABMAAAAAAAAABm1pbnRlcgAAAAAAEwAAAAA=",
         "AAAAAAAAACRUb3RhbCB1bml0cyBjbGFpbWVkIGFnYWluc3QgYSBiYXRjaC4AAAANY2xhaW1lZF91bml0cwAAAAAAAAEAAAAAAAAACGJhdGNoX2lkAAAABAAAAAEAAAAE",
@@ -812,7 +858,8 @@ export class Client extends ContractClient {
     )
   }
   public readonly fromJSON = {
-    burn: this.txFromJSON<null>,
+    tag: this.txFromJSON<Option<Buffer>>,
+        burn: this.txFromJSON<null>,
         mint: this.txFromJSON<null>,
         name: this.txFromJSON<string>,
         claim: this.txFromJSON<u32>,
@@ -825,7 +872,9 @@ export class Client extends ContractClient {
         unpause: this.txFromJSON<null>,
         upgrade: this.txFromJSON<null>,
         has_role: this.txFromJSON<Option<u32>>,
+        link_tag: this.txFromJSON<null>,
         owner_of: this.txFromJSON<string>,
+        producer: this.txFromJSON<Option<string>>,
         transfer: this.txFromJSON<null>,
         burn_from: this.txFromJSON<null>,
         get_admin: this.txFromJSON<Option<string>>,
@@ -834,8 +883,10 @@ export class Client extends ContractClient {
         token_uri: this.txFromJSON<string>,
         grant_role: this.txFromJSON<null>,
         revoke_role: this.txFromJSON<null>,
+        batch_of_tag: this.txFromJSON<Option<u32>>,
         get_approved: this.txFromJSON<Option<string>>,
         get_token_id: this.txFromJSON<u32>,
+        set_producer: this.txFromJSON<null>,
         total_supply: this.txFromJSON<u32>,
         claimed_units: this.txFromJSON<u32>,
         renounce_role: this.txFromJSON<null>,

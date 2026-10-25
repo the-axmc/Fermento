@@ -38,6 +38,12 @@ pub enum BatchKey {
     Claim(u32),
     /// Number of claims recorded so far.
     ClaimCount,
+    /// Producer account of a batch: may link its NFC tag.
+    Producer(u32),
+    /// NFC tag bound to a batch (sha256 of the tag serial), for tap-to-verify.
+    Tag(u32),
+    /// Reverse lookup: which batch a tag is bound to.
+    TagBatch(BytesN<32>),
 }
 
 /// A unit claim, verifiable from a QR code pointing at `claim_id`.
@@ -60,6 +66,10 @@ pub enum BatchRegistryError {
     ZeroUnits = 500,
     /// No claim exists with this id.
     ClaimNotFound = 501,
+    /// The caller is not the producer of this batch.
+    NotProducer = 502,
+    /// This tag is already bound to another batch.
+    TagTaken = 503,
 }
 
 // ################## EVENTS ##################
@@ -90,6 +100,15 @@ pub struct UnitsClaimed {
     pub claim_id: u32,
     pub claimer: Address,
     pub units: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TagLinked {
+    #[topic]
+    pub batch_id: u32,
+    pub producer: Address,
+    pub tag: BytesN<32>,
 }
 
 
@@ -217,6 +236,56 @@ impl BatchRegistry {
     /// Total units claimed against a batch.
     pub fn claimed_units(e: &Env, batch_id: u32) -> u32 {
         e.storage().persistent().get(&BatchKey::Claimed(batch_id)).unwrap_or(0)
+    }
+    // ---------- producer and NFC tag ----------
+
+    /// Name the producer account of a batch, which may then bind an NFC tag.
+    #[only_role(caller, "minter")]
+    pub fn set_producer(e: &Env, batch_id: u32, producer: Address, caller: Address) {
+        Base::owner_of(e, batch_id);
+        e.storage().persistent().set(&BatchKey::Producer(batch_id), &producer);
+        keep_key(e, &BatchKey::Producer(batch_id));
+    }
+
+    /// Bind a physical NFC tag to a batch. `tag` is the sha256 of the tag's
+    /// serial number, so the chain never carries the raw serial. Authorized by
+    /// the producer's own account. Re-linking replaces the previous tag.
+    pub fn link_tag(e: &Env, batch_id: u32, producer: Address, tag: BytesN<32>) {
+        producer.require_auth();
+        Base::owner_of(e, batch_id);
+        let stored: Option<Address> = e.storage().persistent().get(&BatchKey::Producer(batch_id));
+        if stored.as_ref() != Some(&producer) {
+            panic_with_error!(e, BatchRegistryError::NotProducer);
+        }
+        if let Some(other) = e.storage().persistent().get::<_, u32>(&BatchKey::TagBatch(tag.clone())) {
+            if other != batch_id {
+                panic_with_error!(e, BatchRegistryError::TagTaken);
+            }
+        }
+        if let Some(old) = e.storage().persistent().get::<_, BytesN<32>>(&BatchKey::Tag(batch_id)) {
+            if old != tag {
+                e.storage().persistent().remove(&BatchKey::TagBatch(old));
+            }
+        }
+        e.storage().persistent().set(&BatchKey::Tag(batch_id), &tag);
+        keep_key(e, &BatchKey::Tag(batch_id));
+        e.storage().persistent().set(&BatchKey::TagBatch(tag.clone()), &batch_id);
+        keep_key(e, &BatchKey::TagBatch(tag.clone()));
+        TagLinked { batch_id, producer, tag }.publish(e);
+    }
+
+    pub fn producer(e: &Env, batch_id: u32) -> Option<Address> {
+        e.storage().persistent().get(&BatchKey::Producer(batch_id))
+    }
+
+    /// Tag bound to a batch, if any.
+    pub fn tag(e: &Env, batch_id: u32) -> Option<BytesN<32>> {
+        e.storage().persistent().get(&BatchKey::Tag(batch_id))
+    }
+
+    /// Batch a tapped tag belongs to, for the verification page.
+    pub fn batch_of_tag(e: &Env, tag: BytesN<32>) -> Option<u32> {
+        e.storage().persistent().get(&BatchKey::TagBatch(tag))
     }
 }
 

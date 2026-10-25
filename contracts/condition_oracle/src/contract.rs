@@ -2,23 +2,27 @@
 // Compatible with OpenZeppelin Stellar Soroban Contracts ^0.8.0
 //
 // Condition oracle: accepts ed25519-signed cellar readings per batch, keeps
-// in-range statistics, stores a reference age curve per category and exposes
-// the value mark:
+// in-range statistics, stores a reference age curve per category, records the
+// producer's check-ins and a per-producer rating, and exposes the value mark:
 //
 //   mark(batch) = fill_price
 //               x age_curve[category](months_since_fill)
 //               x condition_multiplier(share_of_readings_in_range)
+//               x care_multiplier(check-ins: how often and how well)
+//               x producer_multiplier(rating of the company behind the batch)
 //               - accrued_storage_fee_per_share
 //
 // Multipliers are in basis points (10_000 = 1.0). Prices are in the payment
 // token's units (USDC, 7 decimals).
 //
 // Roles (stellar-access AccessControl):
-//   curator - registers batches, sensors and age curves
+//   curator - registers batches, sensors, producers, age curves and ratings
+// The producer of a batch (an address set by the curator) posts check-ins by
+// signing with its own account; no role is needed for that.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 use stellar_access::access_control::{self as access_control, AccessControl};
 use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
@@ -32,8 +36,25 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const MAX_CLOCK_SKEW: u64 = 600;
 /// Marks kept on chain per batch for the chart.
 const MARK_HISTORY: u32 = 180;
+/// Check-ins kept on chain per batch.
+const CHECKIN_HISTORY: u32 = 60;
+/// Longest check-in note, in bytes.
+const MAX_NOTE_LEN: u32 = 280;
 /// Condition multiplier floor when no reading was in range.
 const MIN_CONDITION_BPS: i128 = 7_000;
+/// Care bonus a perfect (score 100) check-in earns, in bps.
+const CHECKIN_BONUS_BPS: i128 = 250;
+/// The care bonus never exceeds this (1.20x).
+const MAX_CARE_BONUS_BPS: i128 = 2_000;
+/// Check-ins closer together than this earn no bonus (they are still recorded).
+const CHECKIN_COOLDOWN: u64 = SECONDS_PER_DAY;
+/// Days without a check-in before the care bonus starts to decay.
+const CARE_GRACE_DAYS: u64 = 14;
+/// Bonus lost per day of silence past the grace period, in bps.
+const CARE_DECAY_BPS_PER_DAY: i128 = 25;
+/// A producer rating may not leave this band (0.5x to 2.0x).
+const MIN_RATING_BPS: i128 = 5_000;
+const MAX_RATING_BPS: i128 = 20_000;
 
 // ################## STORAGE ##################
 
@@ -43,6 +64,14 @@ pub enum DataKey {
     Stats(u32),
     Marks(u32),
     Curve(Symbol),
+    /// Producer account allowed to post check-ins for a batch.
+    Producer(u32),
+    /// Check-ins of a batch, oldest first.
+    Checkins(u32),
+    /// Running care figures of a batch.
+    Care(u32),
+    /// Rating of a producer account.
+    Rating(Address),
 }
 
 /// Terms the oracle needs to value a batch.
@@ -101,6 +130,57 @@ pub struct Mark {
     pub fee_per_share: i128,
 }
 
+/// A producer's update on a batch: a lab reading, a tasting note, a photo, a
+/// racking. Shown to holders and feeding the care multiplier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Checkin {
+    pub timestamp: u64,
+    /// `lab`, `tasting`, `started`, `photo`, `racking`, `other`...
+    pub kind: Symbol,
+    pub note: String,
+    /// How good the care was, 0 to 100, as reported by the producer.
+    pub score: u32,
+    pub poster: Address,
+    /// Care bonus this check-in earned, in bps.
+    pub bonus_bps: i128,
+}
+
+/// Running care figures of a batch.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Care {
+    pub count: u32,
+    /// Bonus earned so far, before decay, in bps.
+    pub bonus_bps: i128,
+    pub last_timestamp: u64,
+}
+
+/// The platform's view of the company behind a batch.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rating {
+    /// Multiplier in bps: market value of the producer. 10_000 is neutral.
+    pub index_bps: i128,
+    /// Verified as a registered company by the platform.
+    pub certified: bool,
+    pub updated_at: u64,
+}
+
+/// Every factor of the current mark, for the producer page.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Breakdown {
+    pub value: i128,
+    pub timestamp: u64,
+    pub age_bps: i128,
+    pub condition_bps: i128,
+    pub care_bps: i128,
+    pub producer_bps: i128,
+    pub fee_per_share: i128,
+    pub checkins: u32,
+}
+
 // ################## ERRORS ##################
 
 #[contracterror]
@@ -118,6 +198,14 @@ pub enum OracleError {
     FutureReading = 706,
     /// Reading is for another batch than the one addressed.
     BatchMismatch = 707,
+    /// The caller is not the producer of this batch.
+    NotProducer = 708,
+    /// A check-in score must be 0 to 100.
+    InvalidScore = 709,
+    /// A check-in note is longer than MAX_NOTE_LEN bytes.
+    NoteTooLong = 710,
+    /// A rating is outside the allowed band.
+    InvalidRating = 711,
 }
 
 // ################## EVENTS ##################
@@ -142,6 +230,27 @@ pub struct MarkPublished {
     pub timestamp: u64,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckinPosted {
+    #[topic]
+    pub batch_id: u32,
+    #[topic]
+    pub poster: Address,
+    pub kind: Symbol,
+    pub score: u32,
+    pub timestamp: u64,
+    pub bonus_bps: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RatingSet {
+    #[topic]
+    pub producer: Address,
+    pub index_bps: i128,
+    pub certified: bool,
+}
 
 // ################## STORAGE TTL ##################
 //
@@ -224,6 +333,34 @@ impl ConditionOracle {
         keep_key(e, &DataKey::Batch(batch_id));
     }
 
+    /// Name the account that may post check-ins for a batch.
+    #[only_role(caller, "curator")]
+    pub fn set_producer(e: &Env, batch_id: u32, producer: Address, caller: Address) {
+        Self::load(e, batch_id);
+        e.storage().persistent().set(&DataKey::Producer(batch_id), &producer);
+        keep_key(e, &DataKey::Producer(batch_id));
+    }
+
+    /// Rate a producer: `index_bps` is the platform's view of the company's
+    /// market value (certification, sales traction, track record), applied to
+    /// every batch it produces. 10_000 is neutral.
+    #[only_role(caller, "curator")]
+    pub fn set_rating(
+        e: &Env,
+        producer: Address,
+        index_bps: i128,
+        certified: bool,
+        caller: Address,
+    ) {
+        if !(MIN_RATING_BPS..=MAX_RATING_BPS).contains(&index_bps) {
+            panic_with_error!(e, OracleError::InvalidRating);
+        }
+        let rating = Rating { index_bps, certified, updated_at: e.ledger().timestamp() };
+        e.storage().persistent().set(&DataKey::Rating(producer.clone()), &rating);
+        keep_key(e, &DataKey::Rating(producer.clone()));
+        RatingSet { producer, index_bps, certified }.publish(e);
+    }
+
     // ---------- readings ----------
 
     /// Post a sensor reading. Anyone may relay it; the signature by the
@@ -282,6 +419,73 @@ impl ConditionOracle {
         b
     }
 
+    // ---------- check-ins ----------
+
+    /// The producer of a batch posts an update. Authorized by the producer's
+    /// own account (the address the curator set with `set_producer`). Each
+    /// check-in is kept for holders; one per day also earns a care bonus of
+    /// up to CHECKIN_BONUS_BPS scaled by `score`. Returns the care multiplier
+    /// now in force.
+    pub fn post_checkin(
+        e: &Env,
+        batch_id: u32,
+        poster: Address,
+        kind: Symbol,
+        note: String,
+        score: u32,
+    ) -> i128 {
+        poster.require_auth();
+        Self::load(e, batch_id);
+        let producer: Option<Address> = e.storage().persistent().get(&DataKey::Producer(batch_id));
+        if producer.as_ref() != Some(&poster) {
+            panic_with_error!(e, OracleError::NotProducer);
+        }
+        if score > 100 {
+            panic_with_error!(e, OracleError::InvalidScore);
+        }
+        if note.len() > MAX_NOTE_LEN {
+            panic_with_error!(e, OracleError::NoteTooLong);
+        }
+
+        let now = e.ledger().timestamp();
+        let mut care = Self::care(e, batch_id);
+        let rewarded = care.count == 0 || now >= care.last_timestamp + CHECKIN_COOLDOWN;
+        let mut bonus_bps = if rewarded { CHECKIN_BONUS_BPS * score as i128 / 100 } else { 0 };
+        if care.bonus_bps + bonus_bps > MAX_CARE_BONUS_BPS {
+            bonus_bps = MAX_CARE_BONUS_BPS - care.bonus_bps;
+        }
+        care.count += 1;
+        care.bonus_bps += bonus_bps;
+        care.last_timestamp = now;
+        e.storage().persistent().set(&DataKey::Care(batch_id), &care);
+        keep_key(e, &DataKey::Care(batch_id));
+
+        let mut history: Vec<Checkin> =
+            e.storage().persistent().get(&DataKey::Checkins(batch_id)).unwrap_or(Vec::new(e));
+        if history.len() >= CHECKIN_HISTORY {
+            history.remove(0);
+        }
+        history.push_back(Checkin {
+            timestamp: now,
+            kind: kind.clone(),
+            note,
+            score,
+            poster: poster.clone(),
+            bonus_bps,
+        });
+        e.storage().persistent().set(&DataKey::Checkins(batch_id), &history);
+        keep_key(e, &DataKey::Checkins(batch_id));
+
+        CheckinPosted { batch_id, poster, kind, score, timestamp: now, bonus_bps }.publish(e);
+        Self::care_multiplier(&care, now)
+    }
+
+    /// Check-ins of a batch, oldest first.
+    pub fn checkins(e: &Env, batch_id: u32) -> Vec<Checkin> {
+        Self::load(e, batch_id);
+        e.storage().persistent().get(&DataKey::Checkins(batch_id)).unwrap_or(Vec::new(e))
+    }
+
     // ---------- marks ----------
 
     /// Compute the mark now, store it in the batch's history and emit it.
@@ -302,12 +506,27 @@ impl ConditionOracle {
 
     /// Current reference value of one share, computed from storage.
     pub fn mark(e: &Env, batch_id: u32) -> Mark {
+        let b = Self::breakdown(e, batch_id);
+        Mark {
+            value: b.value,
+            timestamp: b.timestamp,
+            age_bps: b.age_bps,
+            condition_bps: b.condition_bps,
+            fee_per_share: b.fee_per_share,
+        }
+    }
+
+    /// The mark and every factor behind it.
+    pub fn breakdown(e: &Env, batch_id: u32) -> Breakdown {
         let config = Self::load(e, batch_id);
         let stats = Self::stats(e, batch_id);
+        let care = Self::care(e, batch_id);
         let now = e.ledger().timestamp();
 
         let age_bps = Self::age_multiplier(e, &config.category, config.filled_at, now);
         let condition_bps = Self::condition_multiplier(&stats);
+        let care_bps = Self::care_multiplier(&care, now);
+        let producer_bps = Self::producer_multiplier(e, batch_id);
         let days = if now > config.filled_at {
             ((now - config.filled_at) / SECONDS_PER_DAY) as i128
         } else {
@@ -315,10 +534,21 @@ impl ConditionOracle {
         };
         let fee_per_share = config.fee_per_share_day * days;
 
-        let gross = config.fill_price * age_bps / BPS * condition_bps / BPS;
+        let gross = config.fill_price * age_bps / BPS * condition_bps / BPS * care_bps / BPS
+            * producer_bps
+            / BPS;
         let value = if gross > fee_per_share { gross - fee_per_share } else { 0 };
 
-        Mark { value, timestamp: now, age_bps, condition_bps, fee_per_share }
+        Breakdown {
+            value,
+            timestamp: now,
+            age_bps,
+            condition_bps,
+            care_bps,
+            producer_bps,
+            fee_per_share,
+            checkins: care.count,
+        }
     }
 
     /// Stored marks, oldest first.
@@ -345,6 +575,21 @@ impl ConditionOracle {
             .unwrap_or_else(|| panic_with_error!(e, OracleError::CurveNotFound))
     }
 
+    /// Account allowed to post check-ins for a batch, if one was set.
+    pub fn producer(e: &Env, batch_id: u32) -> Option<Address> {
+        e.storage().persistent().get(&DataKey::Producer(batch_id))
+    }
+
+    /// Rating of a producer, if the platform has set one.
+    pub fn rating(e: &Env, producer: Address) -> Option<Rating> {
+        e.storage().persistent().get(&DataKey::Rating(producer))
+    }
+
+    pub fn get_care(e: &Env, batch_id: u32) -> Care {
+        Self::load(e, batch_id);
+        Self::care(e, batch_id)
+    }
+
     // ---------- internals ----------
 
     fn load(e: &Env, batch_id: u32) -> BatchConfig {
@@ -359,6 +604,13 @@ impl ConditionOracle {
             .persistent()
             .get(&DataKey::Stats(batch_id))
             .unwrap_or(Stats { total: 0, in_range: 0, last_timestamp: 0, last_temp_c: 0, last_humidity: 0 })
+    }
+
+    fn care(e: &Env, batch_id: u32) -> Care {
+        e.storage()
+            .persistent()
+            .get(&DataKey::Care(batch_id))
+            .unwrap_or(Care { count: 0, bonus_bps: 0, last_timestamp: 0 })
     }
 
     /// Curve point for the elapsed whole months, held flat past the end.
@@ -377,6 +629,41 @@ impl ConditionOracle {
         }
         let share = stats.in_range as i128 * BPS / stats.total as i128;
         MIN_CONDITION_BPS + (BPS - MIN_CONDITION_BPS) * share / BPS
+    }
+
+    /// 1.0 plus the care bonus, which decays once the producer goes quiet for
+    /// longer than CARE_GRACE_DAYS. Never below 1.0.
+    fn care_multiplier(care: &Care, now: u64) -> i128 {
+        if care.count == 0 {
+            return BPS;
+        }
+        let silent_days = if now > care.last_timestamp {
+            (now - care.last_timestamp) / SECONDS_PER_DAY
+        } else {
+            0
+        };
+        let decay = if silent_days > CARE_GRACE_DAYS {
+            (silent_days - CARE_GRACE_DAYS) as i128 * CARE_DECAY_BPS_PER_DAY
+        } else {
+            0
+        };
+        let bonus = if care.bonus_bps > decay { care.bonus_bps - decay } else { 0 };
+        BPS + bonus
+    }
+
+    /// The producer's rating, or 1.0 when the batch has no producer or the
+    /// producer no rating.
+    fn producer_multiplier(e: &Env, batch_id: u32) -> i128 {
+        let producer: Option<Address> = e.storage().persistent().get(&DataKey::Producer(batch_id));
+        match producer {
+            Some(p) => e
+                .storage()
+                .persistent()
+                .get::<_, Rating>(&DataKey::Rating(p))
+                .map(|r| r.index_bps)
+                .unwrap_or(BPS),
+            None => BPS,
+        }
     }
 }
 

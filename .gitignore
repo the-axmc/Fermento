@@ -43,3 +43,6 @@ BUILD_PLAN.md
 deploy/batches.json
 # archived deployments (may hold sensor secrets)
 deploy/archive*/
+# producer profiles and certification applications: VAT numbers, logos
+deploy/producers.json
+deploy/uploads/

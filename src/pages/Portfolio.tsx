@@ -320,7 +320,7 @@ const Portfolio: React.FC = () => {
 
         {account.address && (
           <Link
-            to="/produce"
+            to={produced.length > 0 ? "/producer/me" : "/produce"}
             style={{
               alignSelf: "flex-start",
               marginTop: -12,

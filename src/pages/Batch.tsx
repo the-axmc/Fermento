@@ -10,6 +10,8 @@ import { useBatchChain } from "../hooks/useBatchChain";
 import { SHARES_ID, USDC_ID, getShares } from "../contracts/client";
 import { recordActivity } from "../lib/activity";
 import { celsius, money, pctChange, progress, shortDate } from "../lib/format";
+import Checkins from "../components/Checkins";
+import { useProducer } from "../hooks/useProducer";
 import "./Batch.css";
 
 /* ---------------------------------- Theme --------------------------------- */
@@ -655,6 +657,12 @@ const Batch: React.FC = () => {
   const catalogue = useCatalogue();
   const info = catalogue.find((b) => b.batchId === Number(id));
   const chain = useBatchChain(info?.batchId);
+  const account = useAccount();
+  const { producer, rating } = useProducer(
+    info?.producerAddress ?? info?.producerSlug,
+  );
+  const certified = producer?.tier === "certified" || !!rating?.certified;
+  const mine = !!account.address && chain.producer === account.address;
   const [buying, setBuying] = React.useState(false);
 
   const offering = chain.offering;
@@ -889,6 +897,56 @@ const Batch: React.FC = () => {
               </div>
             </div>
 
+            {mine && (
+              <Link
+                to={`/batch/${info.batchId}/manage`}
+                style={{
+                  ...bigButton,
+                  background: CREAM,
+                  color: INK,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  textDecoration: "none",
+                }}
+              >
+                Manage this batch
+              </Link>
+            )}
+
+            <div
+              style={{
+                borderRadius: 20,
+                background: CREAM,
+                padding: "14px 16px 4px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "baseline",
+                }}
+              >
+                <span style={{ fontWeight: 800, fontSize: 15 }}>
+                  Producer check-ins
+                </span>
+                <span style={{ fontSize: 12, color: INK_SOFT }}>
+                  {chain.breakdown
+                    ? `care ${(Number(chain.breakdown.care_bps) / 100 - 100).toFixed(1) === "0.0" ? "±0" : `+${(Number(chain.breakdown.care_bps) / 100 - 100).toFixed(1)}`} %`
+                    : ""}
+                </span>
+              </div>
+              <Checkins
+                rows={chain.checkins}
+                fillPrice={fillPrice}
+                emptyText="The producer has not checked in yet."
+              />
+            </div>
+
             <div
               style={{
                 display: "flex",
@@ -896,7 +954,20 @@ const Batch: React.FC = () => {
                 borderTop: `1.5px solid ${RULE}`,
               }}
             >
-              <DetailRow label="Producer" value={info.producer} />
+              <DetailRow
+                label="Producer"
+                value={`${info.producer}${certified ? " ✓ certified" : ""}`}
+              />
+              <DetailRow
+                label="NFC card"
+                value={
+                  chain.tag
+                    ? "Linked · tap the card to verify"
+                    : chain.offline
+                      ? "—"
+                      : "Not linked"
+                }
+              />
               <DetailRow label="Region" value={info.region} />
               <DetailRow label="Category" value={info.category} />
               <DetailRow
