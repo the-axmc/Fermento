@@ -153,5 +153,22 @@ export const passkeyErrorMessage = (
     case "UnknownError":
       return "The passkey prompt failed on this device. Try again in a moment.";
   }
+  if (isUndeployedPasskey(e)) {
+    return "That passkey has no account behind it: its deployment failed earlier. Tap “Create account” to make a new one. You can remove the stray passkey later in Settings › Passwords.";
+  }
   return e instanceof Error ? e.message : "Something went wrong. Try again.";
 };
+
+/**
+ * The kit found a passkey whose smart account was never deployed, typically
+ * after a failed relayer call during account creation. The passkey itself
+ * cannot be reused for a new deployment in Smart Account Kit 0.8.
+ */
+export const isUndeployedPasskey = (e: unknown): boolean =>
+  e instanceof Error && /not found on-chain/i.test(e.message);
+
+/** Credential id the kit quotes in its undeployed-passkey error, if any. */
+export const undeployedCredentialId = (e: unknown): string | undefined =>
+  e instanceof Error
+    ? /for credential ([A-Za-z0-9_-]+)/.exec(e.message)?.[1]
+    : undefined;

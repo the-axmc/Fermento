@@ -18,7 +18,9 @@ import type { contract } from "@stellar/stellar-sdk";
 import type { TransactionResult } from "smart-account-kit";
 import {
   isPasskeyError,
+  isUndeployedPasskey,
   passkeyErrorMessage,
+  undeployedCredentialId,
   type PasskeyStep,
 } from "../util/passkey";
 import { APP_NAME, getKit, isAccountConfigured } from "./kit";
@@ -139,9 +141,23 @@ export const AccountProvider = ({
 
   const signIn = useCallback(async () => {
     const kit = getKit();
-    const connected = await withPasskeyPrompt("signin", () =>
-      kit.connectWallet({ prompt: true, fresh: true }),
-    );
+    let connected: Awaited<ReturnType<typeof kit.connectWallet>>;
+    try {
+      connected = await withPasskeyPrompt("signin", () =>
+        kit.connectWallet({ prompt: true, fresh: true }),
+      );
+    } catch (e) {
+      // A passkey whose deployment failed earlier: forget our local record so
+      // the kit stops offering it, then explain what to do.
+      if (isUndeployedPasskey(e)) {
+        const id = undeployedCredentialId(e);
+        if (id) await kit.credentials.delete(id).catch(() => undefined);
+        const friendly = new Error(passkeyErrorMessage(e, "signin"));
+        (friendly as { cause?: unknown }).cause = e;
+        throw friendly;
+      }
+      throw e;
+    }
     const id = connected ? kit.contractId : undefined;
     if (!id) throw new Error("No account found for that passkey.");
     setAddress(id);
