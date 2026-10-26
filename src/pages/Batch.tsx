@@ -986,6 +986,59 @@ const Batch: React.FC = () => {
               {info.name}
             </h1>
 
+            {/* What the chain says about this batch, at a glance: the state of
+                the sale, the inspector's count and whether a card is bound. */}
+            {!chain.offline && (
+              <div
+                className="batch-status"
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  gap: 6,
+                }}
+              >
+                {[
+                  !offering && info.saleStatus !== "awaiting-inspection"
+                    ? { text: "Tracking only", bg: CREAM, fg: INK }
+                    : offering?.open
+                      ? { text: "On sale", bg: INK, fg: CREAM }
+                      : offering
+                        ? { text: "Sale closed", bg: CREAM, fg: INK }
+                        : null,
+                  chain.attestation
+                    ? {
+                        text: `Attested · ${chain.attestation.units} ${info.unit}s`,
+                        bg: "#7CC36B",
+                        fg: INK,
+                      }
+                    : offering || info.saleStatus === "awaiting-inspection"
+                      ? { text: "Not attested", bg: YELLOW, fg: INK }
+                      : null,
+                  chain.tag ? { text: "Card linked", bg: CREAM, fg: INK } : null,
+                ]
+                  .filter((p): p is { text: string; bg: string; fg: string } => !!p)
+                  .map((p) => (
+                    <span
+                      key={p.text}
+                      style={{
+                        ...mono,
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.04em",
+                        padding: "4px 10px",
+                        borderRadius: 11,
+                        background: p.bg,
+                        color: p.fg,
+                      }}
+                    >
+                      {p.text}
+                    </span>
+                  ))}
+              </div>
+            )}
+
             <p
               style={{
                 margin: 0,

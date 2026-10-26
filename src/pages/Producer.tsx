@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { Offering } from "batch_shares_contract";
+import type { Escrow, Offering } from "batch_shares_contract";
 import type { Stats } from "condition_oracle_contract";
 import Landscape from "../components/Landscape";
 import PageHeader from "../components/PageHeader";
@@ -33,7 +33,7 @@ import "./Batch.css";
 
 /* ---------------------------------- Types ---------------------------------- */
 
-type Live = { offering?: Offering; stats?: Stats };
+type Live = { offering?: Offering; escrow?: Escrow; stats?: Stats };
 type Filter = "all" | "sale" | "track";
 
 const DAY = 86_400;
@@ -271,10 +271,17 @@ const CertifiedOwn: React.FC<{
   batches: BatchInfo[];
   rows: Record<number, Live>;
 }> = ({ producer, batches, rows }) => {
-  const received = batches.reduce((sum, b) => {
+  // What buyers paid, split into what reached the producer and what the
+  // sale contract still holds for inspection and collection.
+  const paid = batches.reduce((sum, b) => {
     const o = rows[b.batchId]?.offering;
     return o ? sum + o.price * o.sold : sum;
   }, 0n);
+  const held = batches.reduce(
+    (sum, b) => sum + (rows[b.batchId]?.escrow?.pool ?? 0n),
+    0n,
+  );
+  const received = paid - held;
   return (
     <div
       style={{
@@ -410,6 +417,8 @@ const CertifiedOwn: React.FC<{
           <span style={{ fontSize: 16, color: PINK }}>
             Across {batches.length} registered{" "}
             {batches.length === 1 ? "batch" : "batches"}
+            {held > 0n &&
+              ` · ${money(held)} held in escrow until inspection and collection`}
           </span>
         </div>
 

@@ -286,7 +286,9 @@ const Market: React.FC = () => {
       offering === undefined
         ? chain.loading
           ? "…"
-          : "not on sale"
+          : b.saleStatus === "awaiting-inspection"
+            ? "awaiting attestation"
+            : "tracking only"
         : !offering.open
           ? "sale closed"
           : `${(offering.total_shares - offering.sold).toString()} left`;
