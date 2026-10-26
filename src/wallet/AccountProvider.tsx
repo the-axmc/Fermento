@@ -16,6 +16,11 @@ import {
 } from "react";
 import type { contract } from "@stellar/stellar-sdk";
 import type { TransactionResult } from "smart-account-kit";
+import {
+  isPasskeyError,
+  passkeyErrorMessage,
+  type PasskeyStep,
+} from "../util/passkey";
 import { APP_NAME, getKit, isAccountConfigured } from "./kit";
 
 export type AccountStatus = "loading" | "anonymous" | "connected";
@@ -43,6 +48,39 @@ const unwrap = (result: TransactionResult): string => {
     throw new Error(`[${result.error.code}] ${result.error.message}`);
   }
   return result.hash;
+};
+
+/** The passkey prompt currently open, if any. Browsers allow one at a time. */
+let pendingPrompt: Promise<unknown> | null = null;
+
+/**
+ * Run one passkey interaction. Prompts are serialised: a second request while
+ * one is open is rejected by the browser with the same opaque NotAllowedError
+ * as a cancelled prompt, so a double tap would otherwise look like a failure.
+ * Kit errors are rethrown with a message people can act on; the original
+ * stays in `cause` for the console.
+ */
+const withPasskeyPrompt = async <T,>(
+  step: PasskeyStep,
+  run: () => Promise<T>,
+): Promise<T> => {
+  if (pendingPrompt) {
+    throw new Error("A passkey prompt is already open. Finish it first.");
+  }
+  const promise = run();
+  pendingPrompt = promise;
+  try {
+    return await promise;
+  } catch (e) {
+    if (isPasskeyError(e)) {
+      const friendly = new Error(passkeyErrorMessage(e, step));
+      (friendly as { cause?: unknown }).cause = e;
+      throw friendly;
+    }
+    throw e;
+  } finally {
+    if (pendingPrompt === promise) pendingPrompt = null;
+  }
 };
 
 export const AccountProvider = ({
@@ -83,10 +121,12 @@ export const AccountProvider = ({
     const kit = getKit();
     // No autoFund: the relayer pays every fee, so the account never needs XLM,
     // and Friendbot funding of a fresh account is the flakiest step on testnet.
-    const result = await kit.createWallet(APP_NAME, name, {
-      autoSubmit: true,
-      authenticatorSelection: { residentKey: "required" },
-    });
+    const result = await withPasskeyPrompt("create", () =>
+      kit.createWallet(APP_NAME, name, {
+        autoSubmit: true,
+        authenticatorSelection: { residentKey: "required" },
+      }),
+    );
     // createWallet reports a failed deployment in submitResult instead of throwing.
     if (result.submitResult && !result.submitResult.success) {
       const e = result.submitResult.error;
@@ -99,7 +139,9 @@ export const AccountProvider = ({
 
   const signIn = useCallback(async () => {
     const kit = getKit();
-    const connected = await kit.connectWallet({ prompt: true, fresh: true });
+    const connected = await withPasskeyPrompt("signin", () =>
+      kit.connectWallet({ prompt: true, fresh: true }),
+    );
     const id = connected ? kit.contractId : undefined;
     if (!id) throw new Error("No account found for that passkey.");
     setAddress(id);
@@ -115,7 +157,7 @@ export const AccountProvider = ({
 
   const submit = useCallback(
     async <T,>(tx: contract.AssembledTransaction<T>) =>
-      unwrap(await getKit().signAndSubmit(tx)),
+      unwrap(await withPasskeyPrompt("sign", () => getKit().signAndSubmit(tx))),
     [],
   );
 
