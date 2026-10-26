@@ -1,141 +1,66 @@
 # Fermento
 
-Reserve units of a batch while it ages: a cask of Moscatel, a wheel of Serra da
-Estrela, a vat of kombucha. Producers are paid when the batch is filled instead
-of when it is ready. Buyers follow its condition from the cellar, resell their
-tokens to other buyers, and collect their units at maturity. Built on Stellar,
-with passkey accounts: no wallet to install, no seed phrase, no XLM.
+**Reserve units of a batch while it ages.** A cask of Moscatel, a wheel of Serra
+da Estrela, a vat of kombucha, a jar of kimchi. The producer is paid when the
+batch is filled instead of years later when it is ready. Buyers follow its
+condition from the cellar, resell their tokens to other buyers, and collect
+their units at maturity. One token is one unit.
 
-See [BUILD_PLAN.md](BUILD_PLAN.md) for the HackMeridian scope.
+Built on Stellar for HackMeridian 2026 (track Stellar Composed, builder track
+Scale). Accounts are passkey smart accounts: no wallet to install, no seed
+phrase, no XLM. Live on testnet.
 
-## State of the repo
+- Demo walkthrough with a receipt for every real transaction: see the
+  submission page.
+- Baseline before the hackathon: git tag `pre-hackmeridian` (a Scaffold Stellar
+  batch tracker with one NFT contract). Everything after it was built during
+  the event.
 
-- Tag `pre-hackmeridian` is the baseline before the hackathon: a Scaffold
-  Stellar batch tracker with one OpenZeppelin NFT contract.
-- Everything after that tag is HackMeridian work: the token sale with escrow,
-  the condition oracle, resale, confidential balances, producer pages and
-  card or bank top-ups.
+## The problem
 
-## How it works
+Anything that ages ties up money for years. A Port, Madeira or Moscatel
+producer fills a cask today and sells it in five to twenty years; a cheesemaker
+waits months per wheel. Banks price that badly, so small producers underproduce
+or sell young.
 
-| Contract                       | Package                       | Role                                                                                                                         |
-| ------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `contracts/non_fungible`       | `batch_registry_contract`     | Batch registry: one NFT per physical batch, its stage, NFC tag, the inspector's attestation of how many units exist, claims. |
-| `contracts/batch_shares`       | `batch_shares_contract`       | Primary sale of each batch's tokens (a classic asset and its SAC), escrow, storage fees, resale listings, redemption.        |
-| `contracts/condition_oracle`   | `condition_oracle_contract`   | Signed cellar readings, age curves, check-ins, producer ratings and the value mark.                                          |
-| `contracts/confidential_token` | `confidential_token_contract` | OpenZeppelin confidential token wasm, one wrapper per batch (developer preview, see below).                                  |
+Buyers who would gladly pay early have no safe way to do it. Every platform
+that let the seller vouch for the goods has ended in fraud: Bordeaux Cellars,
+Oeno, Cask Spirits Global, Nant Whisky selling the same barrels several times.
+The platforms that work all rely on an independent custodian whose ledger
+holds title. Our research on this is in [`reports/`](reports/).
 
-Roles are OpenZeppelin `AccessControl`; every contract is upgradeable by the
-`upgrader` role and the registry and sale are pausable.
+Fermento gives the producer most of the money at fill, and gives the buyer the
+protections that today exist only behind bonded warehouses.
 
-**Buyer protection.** A sale only opens once an independent inspector has
-attested the batch, and never for more units than attested. Each payment is
-split: 70 % goes to the producer at once, 15 % is released when the inspector
-confirms the batch while it ages, and 15 % per claim once the buyer collects
-the units. If the inspector declares the batch failed, sales and redemption
-stop and holders take back what is still held. Batches opened before escrow
-existed (batch 14 on testnet) pay the producer in full and have none of this.
+## What it does
 
-**Resale.** Holders list tokens at their own price and others buy them in
-whole or in part; 1 % goes to the treasury. Up to 40 listings per batch are
-open at once; when they are all taken, a cheaper listing replaces the dearest
-one and its tokens go back to their seller.
+**For buyers.** Sign up with Face ID in under twenty seconds. Top up by card or
+bank through a Stellar anchor. Reserve units of a batch in USDC or EURC and
+watch its value mark move with the cellar. Resell to other buyers at your own
+price. Redeem at maturity for the real thing. Optionally keep your balance
+private.
 
-**Storage fee.** Each token accrues a daily fee from the day it was bought,
-paid when it is redeemed. The checkpoint moves with tokens sold on the resale
-market; tokens received any other way pay from the fill date.
+**For producers.** Add a ferment from the phone: kind, origin, dates, sell it
+or just track it. Stick an NFC card on the cask so anyone can tap it and land
+on its record. Post check-ins for your holders. Certified companies apply with
+their VAT number and documents and get a badge and a higher on-chain rating.
 
-## Layout
+**For everyone else.** An independent inspector attests how many units exist
+before a single one is sold, visits during ageing, and can declare a failed
+batch so holders are refunded. The record outlives the app: every batch,
+attestation, reading, trade and claim is on chain and readable without us.
 
-```
-contracts/                    Soroban contracts (table above), tests beside each
-packages/*_contract           Generated TypeScript clients, committed
-src/                          React + Vite app
-  pages/                      Market, batch, portfolio, producer, inspect, wallet
-  hooks/                      Chain reads (useBatchChain), account, holdings, producer
-  lib/                        Anchor top-ups, API sign-in, confidential balances, NFC
-  wallet/                     Smart Account Kit and relayer
-  data/                       Story and artwork per batch id
-scripts/                      Deploy, upgrade, open a batch, producer API, sensor
-deploy/testnet.env            Deployed contract IDs (secrets live in git-ignored files)
-```
+### Buyer protection, in the contracts
 
-## Requirements
-
-Rust with the `wasm32v1-none` target (the toolchain is pinned in
-`rust-toolchain.toml`), Node 22+ and the Stellar CLI. Installation links are in
-the [Soroban setup guide](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup).
-
-## Run
-
-```bash
-npm install
-cp .env.example .env        # contract IDs from deploy/testnet.env
-npm run producer-api        # http://localhost:8787, prints the admin token
-npm run dev                 # http://localhost:5173, proxies /api
-```
-
-Passkeys need HTTPS on a phone: reach the dev server through a tunnel (the
-allowed hosts are in `vite.config.ts`).
-
-Tests and builds:
-
-```bash
-cargo test                  # contract tests
-npm run build               # clients, typecheck, Vite build
-node scripts/confidential-e2e.mjs   # confidential wrapper smoke test on testnet
-```
-
-## Testnet
-
-Contract IDs are in `deploy/testnet.env`, written by
-`scripts/deploy-testnet.sh`. Testnet resets wipe them; after a reset, deploy
-again and copy the IDs into `.env`.
-
-- `scripts/open-batch.sh <admin> <batch-id> <category>` registers a batch end to
-  end: registry token, oracle terms and sensor, share asset, attestation and
-  the sale. Producers can do the same from the app (`/produce`) through the
-  producer API.
-- `scripts/upgrade-testnet.sh <admin> [registry|oracle|shares]` uploads only
-  the contracts whose wasm changed. Uploading 35 KB of code costs thousands of
-  XLM in rent on testnet at the moment, so top the admin up first by merging
-  Friendbot-funded accounts into it.
-- `scripts/extend-ttl.sh` keeps contract instances and code alive.
-- `npm run sensor -- <batch-id>` signs and posts a cellar reading.
-
-After changing a contract: `stellar contract build && npm run bindings`.
-
-## Producer side
-
-A producer is any passkey account that lists or registers a batch. Two tiers:
-
-- **Amateur**: the default. A page with a monogram, a story and the batches.
-- **Certified**: a registered company. Applies in the app (`/certify`) with
-  legal name, VAT number, logo and registration document; an admin approves
-  and the producer's rating goes on chain. Certified producers get the badge,
-  their logo on every product and a higher rating.
-
-Pages:
-
-| Route                | Who           | What                                                                        |
-| -------------------- | ------------- | --------------------------------------------------------------------------- |
-| `/producer/me`       | the producer  | Own page: batches, stats, "Get certified", edit. Certified: dashboard view. |
-| `/producer/<slug>`   | anyone        | Public page with the badge, story, batches on the market, website.          |
-| `/producer/edit`     | the producer  | Name, place, story, what they make.                                         |
-| `/certify`           | the producer  | Certification application and its status.                                   |
-| `/batch/<id>/manage` | the producer  | Per-batch page: value mark and its factors, NFC card link, check-ins.       |
-| `/produce`           | the producer  | Add a batch: put it on sale, or just register and track it.                 |
-| `/inspect`           | the inspector | Attest batches, record visits, declare a failed batch (admin token).        |
-
-What the producer signs with its passkey (fee-sponsored, on chain):
-
-- `condition_oracle.post_checkin`: a lab reading, tasting note, photo or
-  racking with a 0-100 score. Kept on chain for holders.
-- `batch_registry.link_tag`: binds an NFC card to the batch. The app writes
-  the batch URL to the card with Web NFC (Android Chrome) and stores
-  `sha256(serial)` on chain; iPhones type the serial after writing with any NFC
-  app. Anyone tapping the card lands on the batch page, which shows it is linked.
-  Once the batch is attested, only the inspector can re-link it.
+- A sale opens only after an inspector has attested the batch, and never for
+  more units than attested.
+- Each payment splits 70 / 15 / 15: 70 % to the producer at once, 15 % when
+  the inspector confirms the batch during ageing, 15 % per unit when the buyer
+  collects it. A failed batch refunds what is still held.
+- Readings are ed25519-signed by the batch's sensor over the oracle's contract
+  id, the batch, the time and the values, so they cannot be forged or replayed.
+- A producer cannot raise its own mark: check-ins only pause the decay of the
+  care bonus, which only an inspector's visit can raise.
 
 ### The value mark
 
@@ -148,99 +73,236 @@ mark = fill_price
      − storage fee accrued per token
 ```
 
-- **Condition**: readings are ed25519-signed by the batch's sensor over the
-  oracle's contract id, the batch, the time and the values, so they cannot be
-  replayed on another deployment.
-- **Care**: an inspector's visit earns up to +5 % scaled by its score, capped
-  at +20 %. After two weeks without a visit or check-in the bonus decays 0.25 %
-  a day. A producer check-in restarts the two weeks but adds nothing and never
-  brings back what has decayed: a producer cannot raise its own mark.
-- **Producer rating**: posted by the keeper in `scripts/producer-api.ts` from
-  certification (+6 %), the average share of each offering sold (up to +3 %)
-  and track record (+1 % per extra batch, up to +3 %). Stored on chain with the
-  certified flag, so the badge is verifiable.
-- `breakdown(batch_id)` returns every factor, `mark(batch_id)` the value.
-  `publish_mark` adds to the chart history at most once every 10 minutes.
+The keeper publishes a mark at most every ten minutes; the chart in the app is
+read straight from the contract's history, and `breakdown(batch_id)` returns
+every factor.
 
-### Producer API
+## What is in the box
 
-`scripts/producer-api.ts` does what a passkey account cannot do on its own:
-listing needs the platform's admin roles and a classic account to issue the
-token asset. It also keeps producer profiles, runs the oracle keeper and the
-testnet faucet.
+| Area               | What                                                                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Four contracts     | Batch registry (NFT), batch shares (sale, escrow, resale, redemption), condition oracle, confidential token wrapper. Rust, Soroban.    |
+| Web app            | Market, batch page with live chart, portfolio, Sell and buy-from-holders, redeem and claim, wallet, producer pages, inspector console. |
+| Accounts           | OpenZeppelin smart accounts with passkeys through Smart Account Kit; fees paid by a relayer, so the user never holds XLM.             |
+| Payments           | USDC and EURC. Card and bank top-ups through a Stellar anchor (SEP-45 passkey sign-in, SEP-24 hosted deposit).                        |
+| Privacy            | One OpenZeppelin confidential token per batch; Noir circuits proved in the browser with bb.js; auditor key held for compliance.        |
+| Physical link      | NFC card per batch written with Web NFC; `sha256(serial)` bound on chain; locked once attested.                                        |
+| Producer API       | Issues share assets, SEP-45-style sessions, oracle keeper, certification review, testnet faucet, fee relay.                            |
+| Scripts            | Deploy, in-place upgrade, TTL keep-alive, open a batch end to end, sensor simulator.                                                   |
+| Tests              | 95 contract tests beside the contracts (`cargo test`); confidential wrapper smoke test on testnet.                                     |
 
-| Method and path                                                                   | Who          | Purpose                                                  |
-| --------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------- |
-| `GET /api/auth?account=&home_domain=`, `POST /api/auth`                           | anyone       | Sign in: SEP-45 challenge, answered with a session token |
-| `GET /api/batches`, `GET /api/producers/<slug or addr>`                           | anyone       | Listed batches, a profile and its batches                |
-| `POST /api/batches`                                                               | signed in    | List (`listing: "sale"`) or register (`"track"`) a batch |
-| `PUT /api/producers/<addr>`                                                       | that account | Edit the profile                                         |
-| `POST /api/certification`                                                         | that account | Apply (logo data URL, document base64)                   |
-| `GET /api/certification`, `POST /api/certification/<id>/approve` or `/reject`     | admin        | Review; approval posts the rating on chain               |
-| `GET /api/inspections`, `POST /api/inspections/<id>/attest`, `/visit`, `/default` | admin        | The inspector's queue and actions                        |
-| `POST /api/oracle/tick`                                                           | admin        | Run the keeper now                                       |
-| `GET /api/treasury`, `POST /api/fund`                                             | anyone       | Testnet USDC or EURC, once an hour per account           |
+## How it is built
+
+```
+┌──────────────┐  passkey   ┌──────────────────────┐  {func, auth}  ┌─────────────────┐
+│  Fermento    │ ─────────▶ │ OpenZeppelin smart   │ ─────────────▶ │ Fee relayer     │
+│  web app     │            │ account (per user)   │                │ (via /api/relay)│
+└──────┬───────┘            └──────────────────────┘                └────────┬────────┘
+       │ reads marks, balances, listings                                     │ submits, pays
+       ▼                                                                     ▼
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  Stellar
+│ batch        │◀─▶│ batch        │◀─▶│ condition    │   │ confidential │  testnet
+│ registry NFT │   │ shares + SAC │   │ oracle       │   │ wrapper      │
+└──────▲───────┘   └──────────────┘   └──────▲───────┘   └──────────────┘
+       │ attest, visit, declare failed       │ signed readings
+   Inspector console                    Cellar sensor (simulator)
+```
+
+### Contracts (`contracts/`)
+
+All four build on OpenZeppelin Stellar Contracts 0.8.0: `AccessControl` roles,
+every contract upgradeable by the `upgrader` role, registry and sale pausable.
+
+| Contract                       | Package                       | Role                                                                                                                         |
+| ------------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `contracts/non_fungible`       | `batch_registry_contract`     | One NFT per physical batch: stage, NFC tag, the inspector's attestation of how many units exist, unit claims.                |
+| `contracts/batch_shares`       | `batch_shares_contract`       | Primary sale of each batch's tokens (a classic asset and its SAC) in USDC, 70/15/15 escrow, storage fees, resale, redemption. |
+| `contracts/condition_oracle`   | `condition_oracle_contract`   | Signed cellar readings, age curves, check-ins, inspector visits, producer ratings and the published mark.                     |
+| `contracts/confidential_token` | `confidential_token_contract` | OpenZeppelin confidential token wasm, one wrapper per batch (developer preview, see below).                                   |
+
+Design points worth knowing:
+
+- **Share assets are classic Stellar assets.** Each batch gets a fresh issuer
+  whose SAC admin is handed to `batch_shares` and whose master key is then
+  locked, so only the sale contract can ever mint. Classic accounts need a
+  trustline; passkey smart accounts, being contracts, do not.
+- **Resale** keeps up to 40 open listings per batch; when full, a cheaper
+  listing evicts the dearest and returns its tokens to the seller. 1 % of each
+  resale goes to the treasury.
+- **Storage fee** accrues daily per token from purchase and is settled at
+  redemption. The checkpoint travels with tokens sold on the resale market;
+  tokens received any other way pay from the fill date.
+- **Care bonus**: an inspector's visit earns up to +5 % scaled by its score,
+  capped at +20 %. After two weeks without a visit or check-in it decays
+  0.25 % a day. A producer check-in restarts the clock but adds nothing.
+
+### App (`src/`)
+
+React 19, Vite, TypeScript, generated contract clients in `packages/*`.
+
+```
+src/pages/      Market, Batch, Portfolio, Wallet, Producer, ProducerEdit,
+                AddFerment, Manage, Certify, Inspect, Claim, PrivacyCheck, SignIn
+src/hooks/      Chain reads (useBatchChain), account, holdings, producer, confidential
+src/lib/        Anchor top-ups, API sign-in, confidential balances, NFC
+src/wallet/     Smart Account Kit setup and the account provider
+src/components/ Mark chart, check-ins, privacy card, bottom nav, landscape
+src/data/       Story and artwork per batch id
+```
+
+Passkeys need HTTPS on a phone: reach the dev server through a tunnel (allowed
+hosts are in `vite.config.ts`).
+
+### Accounts and fees
+
+Smart accounts come from OpenZeppelin `stellar-accounts` through Smart Account
+Kit 0.8.0, with a passkey signer. Transactions are submitted as `{func, auth}`
+to a fee-sponsoring relayer, so the account never needs XLM. The SDF relayer
+proxy refuses requests from browser origins, so the app posts to the producer
+API's `/api/relay`, which forwards the body server-side.
+
+### Confidential shares (developer preview)
+
+Every batch listed for sale also gets a confidential wrapper over its share
+asset. From the batch page a holder can move shares into it ("Keep private"),
+send them privately and withdraw before redeeming. On chain the wrapper holds
+Pedersen commitments; amounts are decrypted only on the holder's phone. Sender
+and recipient addresses stay public. Fermento holds the auditor key.
+
+- Wrappers are deployed from the confidential-token wasm already on testnet,
+  one per batch, by the producer API at listing. The shared UltraHonk verifier
+  and Fermento's auditor registry are in `deploy/testnet.env`.
+- Client: `stellar-confidential-token-sdk`; proofs are Noir circuits
+  (`public/circuits/`) run by bb.js in the browser. `/privacy-check` measures a
+  device's proving time.
+- Passkey accounts have no ed25519 signer, so each account gets a random
+  32-byte privacy root in localStorage, exportable from the privacy card.
+
+Known limits, stated in the app: the verifier does not yet accept
+zero-knowledge proofs, so amounts are hidden from casual observers but not from
+a determined analyst; the RPC keeps about a week of events, so a device that
+never synced an older balance needs the backup from one that did.
+
+### Producer API (`scripts/producer-api.ts`)
+
+Does what a passkey account cannot: listing needs the platform's admin roles
+and a classic account to issue the share asset. It also keeps producer
+profiles, runs the oracle keeper, the certification review, the testnet faucet
+and the fee relay.
+
+| Method and path                                                                   | Who          | Purpose                                                      |
+| --------------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------ |
+| `GET /api/auth?account=&home_domain=`, `POST /api/auth`                           | anyone       | Sign in: SEP-45 challenge, answered with a session token     |
+| `GET /api/batches`, `GET /api/producers/<slug or addr>`                           | anyone       | Listed batches, a profile and its batches                    |
+| `POST /api/batches`                                                               | signed in    | List (`listing: "sale"`) or register (`"track"`) a batch     |
+| `PUT /api/producers/<addr>`                                                       | that account | Edit the profile                                             |
+| `POST /api/certification`                                                         | that account | Apply (logo data URL, document base64)                       |
+| `GET /api/certification`, `POST /api/certification/<id>/approve` or `/reject`     | admin        | Review; approval posts the rating on chain                   |
+| `GET /api/inspections`, `POST /api/inspections/<id>/attest`, `/visit`, `/default` | admin        | The inspector's queue and actions                            |
+| `POST /api/oracle/tick`                                                           | admin        | Run the keeper now                                           |
+| `GET /api/treasury`, `POST /api/fund`                                             | anyone       | Testnet USDC or EURC, once an hour per account               |
 | `POST /api/relay`                                                                 | anyone       | Fee relay: forwards `{func, auth}` or `{xdr}` to the relayer |
 
 - **Sign-in** works like SEP-45: the API sends a `web_auth_verify` call as
   Soroban authorization entries, the passkey signs the account's entry, and the
   API replays the call in an enforcing simulation, which runs the account's own
-  signature check, then answers with a token valid for an hour. The app does
-  this on the first call that needs it (`src/lib/apiAuth.ts`).
-- **Fee relay.** The SDF relayer proxy refuses requests from browser origins,
-  so `PUBLIC_RELAYER_URL=/api/relay` points the Smart Account Kit at this API,
-  which forwards the body server-side (`RELAYER_UPSTREAM` to change the
-  relayer). Without the API running, sign-in fails with "Account deployment
-  failed [3004]".
+  signature check, then answers with a token valid for an hour
+  (`src/lib/apiAuth.ts`).
 - **Admin** calls need the `X-Admin-Token` header. Set `ADMIN_TOKEN`, or copy
   the one the API prints at start into the Inspect page.
-- The keeper runs every `KEEPER_MINUTES` (default 10): rates every producer
-  and publishes a mark for every batch.
+- **Keeper** runs every `KEEPER_MINUTES` (default 10): rates every producer
+  from certification (+6 %), sell-through (up to +3 %) and track record (up to
+  +3 %), and publishes a mark for every batch.
+- `RELAYER_UPSTREAM` changes the relayer the fee relay forwards to.
 - Profiles and applications live in `deploy/producers.json` and
-  `deploy/uploads/`, listed batches in `deploy/batches.json` (all git-ignored).
+  `deploy/uploads/`, listed batches in `deploy/batches.json` (git-ignored).
 
-### Card and bank top-ups
+### NFC cards
 
-The wallet page tops up through a Stellar anchor (`PUBLIC_ANCHOR_DOMAIN`, the
-SDF test anchor by default): SEP-45 signs the smart account in, SEP-24 opens
-the anchor's own payment page, and the stablecoin arrives in the account.
-Anchors that only offer SEP-10 cannot sign in a passkey account and are shown
-as unsupported. Code: `src/lib/anchor.ts`.
+The producer writes the batch URL to a card with Web NFC (Android Chrome) and
+the registry stores `sha256(serial)`; iPhones type the serial after writing
+with any NFC app. Anyone tapping the card lands on the batch page, which shows
+it is linked. Once the batch is attested only the inspector can re-link it.
+Tamper-evident NTAG 424 DNA tags are the next step (see `reports/`).
 
-### Private shares (confidential tokens, developer preview)
+## Run it
 
-Every batch listed for sale also gets a **confidential wrapper**: an
-OpenZeppelin confidential token over the batch's share asset. A holder can
-move shares into it from the batch page ("Keep private"), send them to another
-holder privately, and withdraw them before redeeming. On chain the wrapper
-holds Pedersen commitments; the amounts are decrypted only on the holder's
-phone. Sender and recipient addresses stay public. Fermento holds the auditor
-key and can read amounts for compliance.
+Requirements: Rust with the `wasm32v1-none` target (pinned in
+`rust-toolchain.toml`), Node 22+, the Stellar CLI
+([setup guide](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup)).
 
-How it is wired:
+```bash
+npm install
+cp .env.example .env        # contract IDs from deploy/testnet.env
+npm run producer-api        # http://localhost:8787, prints the admin token
+npm run dev                 # http://localhost:5173, proxies /api
+```
 
-- Code: the wrapper instances are deployed from the confidential-token wasm
-  already on testnet (`CONFIDENTIAL_TOKEN_WASM` in `deploy/testnet.env`,
-  kept in `contracts/confidential_token/`), one per batch, by the producer
-  API at listing. The shared UltraHonk verifier is `CONFIDENTIAL_VERIFIER`;
-  Fermento's auditor registry is `CONFIDENTIAL_AUDITOR` with the key generated
-  by `scripts/confidential-auditor.ts` (secret in the git-ignored
-  `deploy/auditor.local.env`).
-- Client: `stellar-confidential-token-sdk` (community client for the
-  OpenZeppelin protocol). Proofs are Noir circuits (`public/circuits/`) run
-  by bb.js in the browser; the smart account signs; the relayer pays.
-  `src/lib/confidential.ts` holds keys, proving and local state;
-  `src/hooks/useConfidential.ts` the actions; `src/components/PrivacyCard.tsx`
-  the UI. `/privacy-check` generates a test proof to see how long a device takes.
-- Keys: passkey accounts have no ed25519 signer, so each account gets a random
-  32-byte privacy root in localStorage, exportable from the card. Losing it
-  loses access to the private balance.
+The producer API must be running for sign-in: without it the fee relay is
+missing and account creation fails with "Account deployment failed [3004]".
 
-Known limits, stated in the app: OpenZeppelin's verifier does not yet accept
-zero-knowledge proofs, so amounts are hidden from casual observers but not
-from a determined analyst; the contract is a testnet developer preview; the
-RPC keeps about a week of events, so a device that has never synced a balance
-older than that needs the backup state from the device that has.
+```bash
+cargo test                          # contract tests
+npm run build                       # clients, typecheck, Vite build
+node scripts/confidential-e2e.mjs   # confidential wrapper smoke test on testnet
+```
+
+After changing a contract: `stellar contract build && npm run bindings`.
+
+## Testnet
+
+Contract IDs are in `deploy/testnet.env`, written by
+`scripts/deploy-testnet.sh`. Testnet resets wipe them; after a reset, deploy
+again and copy the IDs into `.env`.
+
+- `scripts/open-batch.sh <admin> <batch-id> <category>` registers a batch end
+  to end: registry token, oracle terms and sensor, share asset, attestation and
+  the sale. Producers do the same from the app (`/produce`) through the API.
+- `scripts/upgrade-testnet.sh <admin> [registry|oracle|shares]` uploads only
+  the contracts whose wasm changed and upgrades them in place. Rent on testnet
+  has swung from thousands of XLM per upload to a few; check the admin balance
+  before and after.
+- `scripts/grant-inspector.sh <admin> <address>` gives an account the inspector
+  role on all three contracts.
+- `scripts/extend-ttl.sh` keeps contract instances and code alive.
+- `npm run sensor -- <batch-id>` signs and posts a cellar reading.
+
+Batches on testnet today: 14 (opened before escrow existed, pays the producer in
+full), 21 (Moscatel Roxo, the demo's full lifecycle: attested, sold, inspected,
+resold, redeemed and collected) and 22 (a tracked kimchi jar).
+
+## Producer side
+
+A producer is any passkey account that lists or registers a batch.
+
+- **Amateur**: the default. A page with a monogram, a story and the batches.
+- **Certified**: a registered company. Applies in the app (`/certify`) with
+  legal name, VAT number, logo and registration document; an admin approves
+  and the producer's rating goes on chain with the certified flag, so the
+  badge is verifiable.
+
+| Route                | Who           | What                                                                        |
+| -------------------- | ------------- | --------------------------------------------------------------------------- |
+| `/producer/me`       | the producer  | Own page: batches, stats, "Get certified", edit. Certified: dashboard view. |
+| `/producer/<slug>`   | anyone        | Public page with the badge, story, batches on the market, website.          |
+| `/producer/edit`     | the producer  | Name, place, story, what they make.                                         |
+| `/certify`           | the producer  | Certification application and its status.                                   |
+| `/batch/<id>/manage` | the producer  | Per-batch page: value mark and its factors, NFC card link, check-ins.       |
+| `/produce`           | the producer  | Add a batch: put it on sale, or just register and track it.                 |
+| `/inspect`           | the inspector | Attest batches, record visits, declare a failed batch (admin token).        |
+
+## What is next
+
+- Pilot with one Setúbal Moscatel producer and the regional commission; bind
+  the attested unit cap to official stock accounts and numbered seals.
+- Tamper-evident NFC tags and a Fermento-provisioned sensor with a secure
+  element, verified on chain with `secp256r1_verify`.
+- Reference sample and lab hash at listing, compared at redemption.
+- Challenge-based releases: milestones pay out unless disputed within seven
+  days; holders can post a deposit to call an inspection; timelock on admin
+  actions.
+- Mainnet path once the confidential verifier accepts ZK proofs, plus a legal
+  review of the pre-order structure in Portugal.
 
 ## License
 
