@@ -180,12 +180,18 @@ testnet faucet.
 | `GET /api/inspections`, `POST /api/inspections/<id>/attest`, `/visit`, `/default` | admin        | The inspector's queue and actions                        |
 | `POST /api/oracle/tick`                                                           | admin        | Run the keeper now                                       |
 | `GET /api/treasury`, `POST /api/fund`                                             | anyone       | Testnet USDC or EURC, once an hour per account           |
+| `POST /api/relay`                                                                 | anyone       | Fee relay: forwards `{func, auth}` or `{xdr}` to the relayer |
 
 - **Sign-in** works like SEP-45: the API sends a `web_auth_verify` call as
   Soroban authorization entries, the passkey signs the account's entry, and the
   API replays the call in an enforcing simulation, which runs the account's own
   signature check, then answers with a token valid for an hour. The app does
   this on the first call that needs it (`src/lib/apiAuth.ts`).
+- **Fee relay.** The SDF relayer proxy refuses requests from browser origins,
+  so `PUBLIC_RELAYER_URL=/api/relay` points the Smart Account Kit at this API,
+  which forwards the body server-side (`RELAYER_UPSTREAM` to change the
+  relayer). Without the API running, sign-in fails with "Account deployment
+  failed [3004]".
 - **Admin** calls need the `X-Admin-Token` header. Set `ADMIN_TOKEN`, or copy
   the one the API prints at start into the Inspect page.
 - The keeper runs every `KEEPER_MINUTES` (default 10): rates every producer

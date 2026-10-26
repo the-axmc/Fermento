@@ -83,6 +83,10 @@ const UPLOADS_DIR = new URL("deploy/uploads/", ROOT);
 const RPC_URL = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const PASSPHRASE = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
 const PORT = Number(process.env.PORT ?? 8787);
+/** Fee-sponsoring relayer the app reaches through POST /api/relay. */
+const RELAYER_UPSTREAM =
+  process.env.RELAYER_UPSTREAM ??
+  "https://smart-account-relayer-proxy.sdf-ecosystem.workers.dev";
 /** Unset: a fresh one is made and printed at start. */
 const ADMIN_TOKEN =
   process.env.ADMIN_TOKEN || randomBytes(18).toString("base64url");
@@ -1768,6 +1772,37 @@ createServer(async (req, res) => {
       });
       console.log(`funded ${body.to} with ${amount} ${body.asset}`, hash);
       return json(res, 200, { hash, asset: body.asset, amount });
+    }
+    // ---- fee relay ----
+    // The SDF relayer proxy rejects browser origins (403 "Origin is not
+    // allowed") but accepts server-side requests, so the app posts to this
+    // same-origin route and we forward the body unchanged. Only the two body
+    // shapes the Smart Account Kit sends are let through.
+    if (req.method === "POST" && path === "/api/relay") {
+      const raw = await readBody(req);
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        return json(res, 400, { success: false, error: "body must be JSON" });
+      }
+      const ok =
+        typeof body.xdr === "string" ||
+        (typeof body.func === "string" && Array.isArray(body.auth));
+      if (!ok)
+        return json(res, 400, {
+          success: false,
+          error: "Request must include xdr, or func and auth",
+        });
+      const upstream = await fetch(RELAYER_UPSTREAM, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(90_000),
+      });
+      const text = await upstream.text();
+      res.writeHead(upstream.status, { "Content-Type": "application/json" });
+      return res.end(text);
     }
     json(res, 404, { error: "not found" });
   } catch (err) {
