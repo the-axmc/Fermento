@@ -1,7 +1,11 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { useAccount } from "../hooks/useAccount";
-import { isPasskeySupported, passkeyErrorMessage } from "../util/passkey";
+import {
+  isEmbedded,
+  isPasskeySupported,
+  passkeyErrorMessage,
+} from "../util/passkey";
 import "./SignIn.css";
 
 /* ---------------------------------- Theme --------------------------------- */
@@ -204,9 +208,11 @@ const SignIn: React.FC = () => {
   const [error, setError] = React.useState<string | null>(
     !isPasskeySupported()
       ? "This browser doesn't support passkeys. Try Safari or Chrome on your phone."
-      : !account.configured
-        ? "Accounts are not configured: set PUBLIC_ACCOUNT_WASM_HASH and PUBLIC_WEBAUTHN_VERIFIER_ID."
-        : null,
+      : isEmbedded()
+        ? "Passkeys can't run inside an embedded preview. Open this page in Safari or Chrome."
+        : !account.configured
+          ? "Accounts are not configured: set PUBLIC_ACCOUNT_WASM_HASH and PUBLIC_WEBAUTHN_VERIFIER_ID."
+          : null,
   );
 
   // Already signed in on this device: skip the page.
@@ -229,7 +235,7 @@ const SignIn: React.FC = () => {
       await account.create(trimmed);
       navigate(HOME_ROUTE);
     } catch (err) {
-      setError(passkeyErrorMessage(err));
+      setError(passkeyErrorMessage(err, "create"));
     } finally {
       setBusy(null);
     }
@@ -242,7 +248,7 @@ const SignIn: React.FC = () => {
       await account.signIn();
       navigate(HOME_ROUTE);
     } catch (err) {
-      setError(passkeyErrorMessage(err));
+      setError(passkeyErrorMessage(err, "signin"));
     } finally {
       setBusy(null);
     }
